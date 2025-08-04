@@ -1,0 +1,31 @@
+# ROS2 build and install folders
+build/
+install/
+log/
+
+# Colcon and CMake files
+colcon*.log
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Visual Studio Code settings
+.vscode/
+
+# ROS2 launch, params, and config files (optional, if generated)
+*.launch.pyc
+*.params.pyc
+
+# Misc
+*.swp
+*.bak
+*.tmp
+*.orig
+
+# Ignore .DS_Store (macOS)
+.DS_Store
