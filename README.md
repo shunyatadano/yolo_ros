@@ -11,6 +11,7 @@
 - **kachaka_description**: Kachakaロボットの3DモデルとURDF記述
 - **kachaka_follow**: LIDARを使用して最も近いオブジェクトに向かって移動するサンプルノード
 - **kachaka_nav2_bringup**: Nav2ナビゲーションスタック用の起動ファイルと設定
+- **my_kachaka_apps**: 顔検出・追従機能を含むカスタムアプリケーション集
 
 ## 前提条件
 
@@ -64,8 +65,16 @@ cp -r ~/kachaka-api/ros2/kachaka_grpc_ros2_bridge/gen-src ~/kachaka_ws/src/kacha
 ### 3. ビルド
 ```bash
 cd ~/kachaka_ws
-colcon build
+colcon build --cmake-args -DUSE_LIFECYCLE_NODE=ON
 ```
+
+**注意: RealSense ROS パッケージについて**
+このワークスペースには Intel RealSense カメラ用のROS2パッケージ (`realsense-ros`) が含まれています。ビルド時にFastRTPS依存関係の問題が発生する場合がありますが、これは解決済みです。ただし、以下の点にご注意ください：
+
+- **修正内容**: `realsense2_camera` パッケージのCMakeLists.txtに、FastRTPS cmake ターゲットが見つからない問題を回避するためのワークアラウンドが適用されています
+- **影響**: この修正により、RealSenseカメラの基本機能は正常に動作しますが、DDS通信の一部高度な機能が制限される可能性があります
+- **推奨事項**: 本格的なRealSenseカメラ開発を行う場合は、Intel公式のRealSense SDK環境設定を推奨します
+- **⚠️ 重要**: このワークスペースでは `USE_LIFECYCLE_NODE=ON` でビルドされているため、RealSenseカメラはLifecycleNodeとして起動します。トピックを有効にするには手動でのアクティベーションが必要です（詳細は「RealSenseカメラの使用方法」セクションを参照）
 
 ### 4. 環境の設定
 ```bash
@@ -121,6 +130,143 @@ ros2 run kachaka_follow follow
 ros2 launch kachaka_nav2_bringup navigation_launch.py
 ```
 
+### RealSenseカメラの使用方法
+
+このワークスペースはLifecycleNode機能が有効化されているため、RealSenseカメラは通常のノードとは異なる起動手順が必要です。
+
+#### 1. カメラノードの起動
+```bash
+# ワークスペースの環境を読み込み
+source install/setup.bash
+
+# RealSenseカメラノードを起動（バックグラウンドで実行）
+ros2 launch realsense2_camera rs_launch.py &
+```
+
+#### 2. LifecycleNodeのアクティベーション
+カメラノードを起動した後、以下のコマンドでノードを設定・アクティベートする必要があります：
+
+```bash
+# ノードを設定状態に移行
+ros2 lifecycle set /camera/camera configure
+
+# ノードをアクティブ状態に移行（この時点でトピックが配信開始）
+ros2 lifecycle set /camera/camera activate
+```
+
+#### 3. カメラトピックの確認
+アクティベーション後、以下のトピックが利用可能になります：
+
+```bash
+# カメラトピック一覧を確認
+ros2 topic list | grep camera
+
+# カラー画像の取得
+ros2 topic echo /camera/camera/color/image_raw --once
+
+# 深度画像の取得  
+ros2 topic echo /camera/camera/depth/image_rect_raw --once
+
+# カメラ情報の取得
+ros2 topic echo /camera/camera/color/camera_info --once
+```
+
+#### 4. LifecycleNodeの状態管理
+```bash
+# 現在の状態を確認
+ros2 lifecycle get /camera/camera
+
+# ノードを非アクティブ化（トピック配信停止）
+ros2 lifecycle set /camera/camera deactivate
+
+# ノードを設定解除
+ros2 lifecycle set /camera/camera cleanup
+
+# ノードを再アクティブ化
+ros2 lifecycle set /camera/camera configure
+ros2 lifecycle set /camera/camera activate
+```
+
+**💡 ヒント**: 
+- LifecycleNodeを使用する理由は、カメラリソースの適切な管理とシステムの安定性向上のためです
+- カメラを使用しない場合は `deactivate` でリソースを解放できます
+- システム起動時に自動でアクティベーションしたい場合は、起動スクリプトに上記コマンドを含めてください
+
+### 顔検出アプリケーション（my_kachaka_apps）の使用方法
+
+このワークスペースには、RealSenseカメラを使用した顔検出・追従機能が含まれています。
+
+#### 機能概要
+- **顔検出**: OpenCV Haar Cascade分類器による人物の顔検出
+- **リアルタイム表示**: cv2.imshowによるカメラ映像と検出結果の表示
+- **バウンディングボックス**: 検出された顔を緑色の矩形で囲んで表示
+- **P制御**: 顔の位置に基づいてロボットの角速度を計算
+- **制御コマンド送信**: `/cmd_vel`トピックに制御コマンドを送信
+- **デバッグ機能**: 検出結果を `/tmp/face_detection_test_*.jpg` に自動保存
+
+#### 使用方法
+
+**前提条件**: 
+- RealSenseカメラが接続され、カメラトピックが利用可能である必要があります
+- Kachakaロボットとの接続が確立されている必要があります
+
+**顔追従システムの実行**:
+```bash
+cd ~/ws_kachaka
+source install/setup.bash
+ros2 run my_kachaka_apps face_tracker_node
+```
+
+#### 期待される動作
+- **OpenCVウィンドウ**: "Face Detection"という名前のウィンドウが表示
+- **顔の検出**: カメラの前に顔を向けると緑色の矩形で囲まれる
+- **ロボット追従**: 顔の動きに合わせてKachakaが旋回
+- **制御値出力**: 顔の位置と計算された角速度がコンソールに表示
+- **制御コマンド**: `/kachaka/manual_control/cmd_vel`トピックに制御コマンドが送信される
+- **デッドゾーン**: 顔が中央付近にある時は回転を停止（振動防止）
+- **テスト画像**: 30フレームごとに検出結果が `/tmp/` に保存
+
+#### 最適化されたパラメータ（Task 2-B完了）
+```bash
+# デフォルトで最適化された値が使用されます
+# turn_gain: 0.002 (ハンチング防止のため0.004から減少)
+# dead_zone_percent: 20% (中央安定性向上のため10%から増加)
+
+# カスタムパラメータでの起動
+ros2 run my_kachaka_apps face_tracker_node --ros-args -p turn_gain:=0.003 -p dead_zone_percent:=15
+
+# 実行中のリアルタイム調整
+ros2 param set /face_tracker_node turn_gain 0.002
+ros2 param set /face_tracker_node dead_zone_percent 20
+```
+
+#### 制御コマンドの監視
+```bash
+# 別ターミナルでKachakaへの制御コマンドを監視
+ros2 topic echo /kachaka/manual_control/cmd_vel
+```
+
+#### トラブルシューティング
+
+**問題: 顔検出が動作しない**
+- カメラが接続されているか確認: `ros2 topic list | grep camera`
+- カメラデータが配信されているか確認: `ros2 topic echo /camera/camera/color/image_raw --once`
+
+**問題: Kachakaロボットが動作しない**
+- Kachaka制御トピックが配信されているか確認: `ros2 topic echo /kachaka/manual_control/cmd_vel`
+- Kachakaトピックが利用可能か確認: `ros2 topic list | grep kachaka`
+- ロボットがマニュアル制御モードになっているか確認
+
+**問題: ロボットがハンチング（振動）する**
+- `turn_gain`を小さくする: `ros2 param set /face_tracker_node turn_gain 0.001`
+- `dead_zone_percent`を大きくする: `ros2 param set /face_tracker_node dead_zone_percent 25`
+
+**問題: ロボットの反応が鈍い**
+- `turn_gain`を大きくする: `ros2 param set /face_tracker_node turn_gain 0.003`
+- `dead_zone_percent`を小さくする: `ros2 param set /face_tracker_node dead_zone_percent 15`
+
+詳細な使用方法と設定については、`src/my_kachaka_apps/README.md` を参照してください。
+
 ## トピックの利用方法
 
 ### センサーデータの取得
@@ -142,6 +288,9 @@ ros2 topic echo /kachaka/robot_info/battery_state
 ```bash
 # 手動制御（速度指令）
 ros2 topic pub /kachaka/manual_control/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.1, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.1}}"
+
+# 顔検出による自動制御（my_kachaka_appsパッケージ）
+ros2 topic echo /cmd_vel  # 顔検出ノードからの制御コマンドを監視
 
 # 目標位置の設定
 ros2 topic pub /kachaka/goal_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'map'}, pose: {position: {x: 1.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}}}"
@@ -211,6 +360,25 @@ sudo apt install -y libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc
 cp -r ~/kachaka-api/ros2/kachaka_grpc_ros2_bridge/gen-src ~/kachaka_ws/src/kachaka_grpc_ros2_bridge/
 ```
 
+### ビルドエラー: RealSense "fastrtps" target missing
+
+**症状**: `realsense2_camera` パッケージのビルド時に「The following imported targets are referenced, but are missing: fastrtps」エラーが発生
+
+**原因**: Intel RealSense SDK が FastRTPS サポート付きでコンパイルされているが、FastRTPS の cmake ターゲットが見つからない
+
+**解決方法**: 
+このエラーは既に修正済みです。`src/realsense-ros/realsense2_camera/CMakeLists.txt` にワークアラウンドが適用されています。それでも問題が発生する場合は：
+
+```bash
+# RealSenseパッケージのみを除外してビルド
+colcon build --packages-skip realsense2_camera --cmake-args -DUSE_LIFECYCLE_NODE=ON
+
+# または、RealSense SDK を完全に削除
+sudo apt remove librealsense2-dev librealsense2-utils
+```
+
+**注意**: このワークアラウンドは基本的な機能は提供しますが、RealSense カメラの高度なDDS通信機能が制限される可能性があります。
+
 ### 警告: "unused variable 'kPngUnkown'"
 
 **症状**: ビルド時に未使用変数の警告が表示される
@@ -228,7 +396,36 @@ sudo usermod -aG docker $USER
 # ログアウト・ログインして権限を反映
 ```
 
-### 画像トピックにデータが流れない
+### RealSenseカメラトピックにデータが流れない
+
+**症状**: `/camera/camera/color/image_raw` などのRealSenseカメラトピックでデータが取得できない
+
+**原因**: RealSenseカメラがLifecycleNodeとして起動しており、手動でのアクティベーションが必要
+
+**解決方法**:
+
+1. **LifecycleNodeをアクティベート**:
+   ```bash
+   # ノードを設定
+   ros2 lifecycle set /camera/camera configure
+   
+   # ノードをアクティブ化
+   ros2 lifecycle set /camera/camera activate
+   ```
+
+2. **ノードの状態を確認**:
+   ```bash
+   # 現在の状態を確認（"active"になっているか確認）
+   ros2 lifecycle get /camera/camera
+   ```
+
+3. **トピック一覧を確認**:
+   ```bash
+   # カメラトピックが表示されるか確認
+   ros2 topic list | grep camera
+   ```
+
+### 画像トピックにデータが流れない（Kachaka関連）
 
 **症状**: `/kachaka/front_camera/image_raw` などの画像トピックでデータが取得できない
 
