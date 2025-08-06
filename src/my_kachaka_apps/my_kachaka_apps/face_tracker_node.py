@@ -11,16 +11,17 @@ from rcl_interfaces.msg import ParameterDescriptor
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 
-# Handle OpenCV and cv_bridge import with better error handling
+# Handle OpenCV, MediaPipe and cv_bridge import with better error handling
 try:
     import cv2
     import numpy as np
+    import mediapipe as mp
     # Set NumPy compatibility for cv_bridge
     np._no_nep50_warning = True
     from cv_bridge import CvBridge
     OPENCV_AVAILABLE = True
 except ImportError as e:
-    print(f"Warning: OpenCV or cv_bridge not available: {e}")
+    print(f"Warning: OpenCV, MediaPipe or cv_bridge not available: {e}")
     OPENCV_AVAILABLE = False
 except AttributeError as e:
     print(f"Warning: NumPy compatibility issue with cv_bridge: {e}")
@@ -28,6 +29,7 @@ except AttributeError as e:
     try:
         import cv2
         import numpy as np
+        import mediapipe as mp
         # Try downgrading NumPy API compatibility
         os.environ['NPY_DISABLE_SVML'] = '1'
         from cv_bridge import CvBridge
@@ -50,20 +52,41 @@ class FaceTrackerNode(Node):
         turn_gain_desc = ParameterDescriptor(description='P-control gain for angular velocity (rad/s per pixel)')
         dead_zone_desc = ParameterDescriptor(description='Dead zone percentage to prevent oscillation')
         
+        # Image enhancement parameters for backlight conditions
+        clahe_clip_desc = ParameterDescriptor(description='CLAHE clip limit for contrast enhancement (higher = more contrast)')
+        clahe_grid_desc = ParameterDescriptor(description='CLAHE tile grid size (smaller = more local adaptation)')
+        gamma_desc = ParameterDescriptor(description='Gamma correction value (>1.0 brightens dark areas)')
+        enable_bilateral_desc = ParameterDescriptor(description='Enable bilateral filtering for noise reduction')
+        enable_enhancement_desc = ParameterDescriptor(description='Enable all image enhancements (false = use raw image)')
+        
         self.declare_parameter('turn_gain', 0.003, turn_gain_desc)
         self.declare_parameter('dead_zone_percent', 15, dead_zone_desc)
+        self.declare_parameter('clahe_clip_limit', 8.0, clahe_clip_desc)
+        self.declare_parameter('clahe_grid_size', 6, clahe_grid_desc)
+        self.declare_parameter('gamma_correction', 1.5, gamma_desc)
+        self.declare_parameter('enable_bilateral_filter', True, enable_bilateral_desc)
+        self.declare_parameter('enable_image_enhancement', False, enable_enhancement_desc)
         
         self.turn_gain = self.get_parameter('turn_gain').get_parameter_value().double_value
         self.dead_zone_percent = self.get_parameter('dead_zone_percent').get_parameter_value().integer_value
         
+        # Image enhancement parameters
+        self.clahe_clip_limit = self.get_parameter('clahe_clip_limit').get_parameter_value().double_value
+        self.clahe_grid_size = self.get_parameter('clahe_grid_size').get_parameter_value().integer_value
+        self.gamma_correction = self.get_parameter('gamma_correction').get_parameter_value().double_value
+        self.enable_bilateral_filter = self.get_parameter('enable_bilateral_filter').get_parameter_value().bool_value
+        self.enable_image_enhancement = self.get_parameter('enable_image_enhancement').get_parameter_value().bool_value
+        
         # Enable dynamic parameter updates for Task 2-B tuning
         self.add_on_set_parameters_callback(self.parameter_callback)
         
-        # Initialize OpenCV components
+        # Initialize OpenCV and MediaPipe components
         self.bridge = CvBridge()
         
-        # Load Haar cascade for face detection
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # Initialize MediaPipe face detection
+        self.mp_face_detection = mp.solutions.face_detection
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.face_detection = self.mp_face_detection.FaceDetection(min_detection_confidence=0.5)
         
         # QoS profile for sensor data - best effort reliability
         sensor_qos = QoSProfile(
@@ -119,6 +142,26 @@ class FaceTrackerNode(Node):
                 old_zone = self.dead_zone_percent
                 self.dead_zone_percent = param.value
                 self.get_logger().info(f'Task 2-B: Updated dead_zone_percent from {old_zone}% to {self.dead_zone_percent}%')
+            elif param.name == 'clahe_clip_limit':
+                old_val = self.clahe_clip_limit
+                self.clahe_clip_limit = param.value
+                self.get_logger().info(f'Updated CLAHE clip limit from {old_val:.1f} to {self.clahe_clip_limit:.1f}')
+            elif param.name == 'clahe_grid_size':
+                old_val = self.clahe_grid_size
+                self.clahe_grid_size = param.value
+                self.get_logger().info(f'Updated CLAHE grid size from {old_val} to {self.clahe_grid_size}')
+            elif param.name == 'gamma_correction':
+                old_val = self.gamma_correction
+                self.gamma_correction = param.value
+                self.get_logger().info(f'Updated gamma correction from {old_val:.2f} to {self.gamma_correction:.2f}')
+            elif param.name == 'enable_bilateral_filter':
+                old_val = self.enable_bilateral_filter
+                self.enable_bilateral_filter = param.value
+                self.get_logger().info(f'Updated bilateral filter from {old_val} to {self.enable_bilateral_filter}')
+            elif param.name == 'enable_image_enhancement':
+                old_val = self.enable_image_enhancement
+                self.enable_image_enhancement = param.value
+                self.get_logger().info(f'Updated image enhancement from {old_val} to {self.enable_image_enhancement}')
         
         return SetParametersResult(successful=True)
 
@@ -131,34 +174,72 @@ class FaceTrackerNode(Node):
             cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
             self.image_width = cv_image.shape[1]
             
-            # Convert to grayscale for face detection
-            gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-            
-            # Detect faces
-            faces = self.face_cascade.detectMultiScale(
-                gray, 
-                scaleFactor=1.1, 
-                minNeighbors=5, 
-                minSize=(30, 30)
-            )
-            
-            # Draw bounding boxes around detected faces
-            display_image = cv_image.copy()
-            
-            if len(faces) > 0:
-                # Draw rectangles around all detected faces
-                for (x, y, w, h) in faces:
-                    cv2.rectangle(display_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # Apply image enhancements for better face detection in difficult lighting
+            if self.enable_image_enhancement:
+                enhanced_image = cv_image.copy()
                 
-                # Find the largest face (closest person)
-                largest_face = max(faces, key=lambda face: face[2] * face[3])
-                x, y, w, h = largest_face
+                # 1. Bilateral filter to reduce noise while preserving edges
+                if self.enable_bilateral_filter:
+                    enhanced_image = cv2.bilateralFilter(enhanced_image, 9, 75, 75)
                 
-                # Calculate face center
-                self.face_center_x = x + w // 2
-                self.face_detected = True
+                # 2. Gamma correction to brighten dark areas
+                if self.gamma_correction != 1.0:
+                    # Build lookup table for gamma correction
+                    inv_gamma = 1.0 / self.gamma_correction
+                    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+                    enhanced_image = cv2.LUT(enhanced_image, table)
                 
-                self.get_logger().debug(f'Face detected at x={self.face_center_x}, image_width={self.image_width}')
+                # 3. CLAHE for local contrast enhancement on each channel
+                clahe = cv2.createCLAHE(clipLimit=self.clahe_clip_limit, tileGridSize=(self.clahe_grid_size, self.clahe_grid_size))
+                lab_image = cv2.cvtColor(enhanced_image, cv2.COLOR_BGR2LAB)
+                lab_image[:, :, 0] = clahe.apply(lab_image[:, :, 0])
+                enhanced_image = cv2.cvtColor(lab_image, cv2.COLOR_LAB2BGR)
+            else:
+                # Use raw image without any enhancements
+                enhanced_image = cv_image
+            
+            # Convert BGR to RGB for MediaPipe
+            rgb_image = cv2.cvtColor(enhanced_image, cv2.COLOR_BGR2RGB)
+            rgb_image.flags.writeable = False
+            results = self.face_detection.process(rgb_image)
+            
+            # Draw face detection annotations
+            rgb_image.flags.writeable = True
+            display_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR)
+            
+            if results.detections:
+                # Find the largest face (closest person) based on bounding box area
+                largest_detection = None
+                largest_area = 0
+                
+                for detection in results.detections:
+                    # Draw detection
+                    self.mp_drawing.draw_detection(display_image, detection)
+                    
+                    # Calculate bounding box area to find largest face
+                    bbox = detection.location_data.relative_bounding_box
+                    area = bbox.width * bbox.height
+                    
+                    if area > largest_area:
+                        largest_area = area
+                        largest_detection = detection
+                
+                if largest_detection:
+                    # Calculate face center from the largest detection
+                    bbox = largest_detection.location_data.relative_bounding_box
+                    h, w = cv_image.shape[:2]
+                    x = int(bbox.xmin * w)
+                    y = int(bbox.ymin * h)
+                    width = int(bbox.width * w)
+                    height = int(bbox.height * h)
+                    
+                    self.face_center_x = x + width // 2
+                    self.face_detected = True
+                    
+                    self.get_logger().debug(f'Face detected at x={self.face_center_x}, image_width={self.image_width}')
+                else:
+                    self.face_detected = False
+                    self.get_logger().debug('No face detected')
             else:
                 self.face_detected = False
                 self.get_logger().debug('No face detected')
