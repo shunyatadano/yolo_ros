@@ -196,13 +196,33 @@ ros2 lifecycle set /camera/camera activate
 
 このワークスペースには、RealSenseカメラを使用した顔検出・追従機能が含まれています。
 
-#### 機能概要
+#### 📋 機能概要
 - **顔検出**: OpenCV Haar Cascade分類器による人物の顔検出
 - **リアルタイム表示**: cv2.imshowによるカメラ映像と検出結果の表示
 - **バウンディングボックス**: 検出された顔を緑色の矩形で囲んで表示
-- **P制御**: 顔の位置に基づいてロボットの角速度を計算
-- **制御コマンド送信**: `/cmd_vel`トピックに制御コマンドを送信
+- **🆕 拡張制御システム**: キックスタート制御と最低速度保証による安定追従
+- **🆕 頑健な顔検出**: ヒストグラム平坦化による照明変化への対応
+- **制御コマンド送信**: `/kachaka/manual_control/cmd_vel`トピックに制御コマンドを送信
 - **デバッグ機能**: 検出結果を `/tmp/face_detection_test_*.jpg` に自動保存
+
+#### 🔧 v2 機能強化（2025年1月実装）
+**仕様変更①: 旋回制御ロジックの改善**
+- **キックスタート制御**: 静止摩擦突破のため、追従開始時に高い角速度を短時間適用
+- **最低速度保証**: 継続追従中の角速度が最低値を下回る場合、自動的に引き上げ
+- **追従状態管理**: 追従開始/継続の判定により適切な制御方式を選択
+
+**仕様変更②: 顔検出アルゴリズムの頑健性向上**
+- **ヒストグラム平坦化**: 逆光・遠距離・見上げ角などの悪条件下での検出性能向上
+- **前処理最適化**: グレースケール変換後にcv2.equalizeHist()を適用
+
+#### 📊 新規追加パラメータ
+| パラメータ名 | 型 | デフォルト値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `kick_duration` | Double | 0.2 | キックスタート適用時間 [秒] |
+| `kick_speed` | Double | 0.4 | キックスタート時の角速度 [rad/s] |
+| `min_angular_speed` | Double | 0.15 | 追従継続のための最低角速度 [rad/s] |
+| `turn_gain` | Double | 0.002 | P制御の比例ゲイン（最適化済み） |
+| `dead_zone_percent` | Integer | 20 | 不感帯幅の画像幅に対する% |
 
 #### 使用方法
 
@@ -220,24 +240,58 @@ ros2 run my_kachaka_apps face_tracker_node
 #### 期待される動作
 - **OpenCVウィンドウ**: "Face Detection"という名前のウィンドウが表示
 - **顔の検出**: カメラの前に顔を向けると緑色の矩形で囲まれる
-- **ロボット追従**: 顔の動きに合わせてKachakaが旋回
+- **🆕 拡張ロボット追従**: 
+  - 追従開始時: キックスタート制御で素早い旋回開始
+  - 追従継続時: 最低速度保証で安定した旋回維持
+  - 制御状態表示: コンソールに制御方式が表示 (`kick-start`, `P-control`, `min-speed`)
 - **制御値出力**: 顔の位置と計算された角速度がコンソールに表示
 - **制御コマンド**: `/kachaka/manual_control/cmd_vel`トピックに制御コマンドが送信される
 - **デッドゾーン**: 顔が中央付近にある時は回転を停止（振動防止）
 - **テスト画像**: 30フレームごとに検出結果が `/tmp/` に保存
 
-#### 最適化されたパラメータ（Task 2-B完了）
+#### 🎛️ パラメータ調整方法
+
+**基本実行（デフォルトパラメータ使用）**:
 ```bash
-# デフォルトで最適化された値が使用されます
-# turn_gain: 0.002 (ハンチング防止のため0.004から減少)
-# dead_zone_percent: 20% (中央安定性向上のため10%から増加)
+ros2 run my_kachaka_apps face_tracker_node
+```
 
-# カスタムパラメータでの起動
-ros2 run my_kachaka_apps face_tracker_node --ros-args -p turn_gain:=0.003 -p dead_zone_percent:=15
+**カスタムパラメータでの起動**:
+```bash
+# 全パラメータ指定例
+ros2 run my_kachaka_apps face_tracker_node --ros-args \
+  -p turn_gain:=0.003 \
+  -p dead_zone_percent:=15 \
+  -p kick_duration:=0.3 \
+  -p kick_speed:=0.5 \
+  -p min_angular_speed:=0.2
 
-# 実行中のリアルタイム調整
+# 重量物積載時の設定例（より強力なキックスタート）
+ros2 run my_kachaka_apps face_tracker_node --ros-args \
+  -p kick_speed:=0.6 \
+  -p kick_duration:=0.3 \
+  -p min_angular_speed:=0.2
+```
+
+**実行中のリアルタイム調整**:
+```bash
+# P制御ゲインの調整
 ros2 param set /face_tracker_node turn_gain 0.002
+
+# 不感帯の調整
 ros2 param set /face_tracker_node dead_zone_percent 20
+
+# キックスタート設定の調整
+ros2 param set /face_tracker_node kick_speed 0.4
+ros2 param set /face_tracker_node kick_duration 0.2
+ros2 param set /face_tracker_node min_angular_speed 0.15
+```
+
+**パラメータ確認**:
+```bash
+# 現在のパラメータ値を確認
+ros2 param list /face_tracker_node
+ros2 param get /face_tracker_node kick_speed
 ```
 
 #### 制御コマンドの監視
@@ -246,24 +300,43 @@ ros2 param set /face_tracker_node dead_zone_percent 20
 ros2 topic echo /kachaka/manual_control/cmd_vel
 ```
 
-#### トラブルシューティング
+#### 🔧 トラブルシューティング
 
 **問題: 顔検出が動作しない**
 - カメラが接続されているか確認: `ros2 topic list | grep camera`
 - カメラデータが配信されているか確認: `ros2 topic echo /camera/camera/color/image_raw --once`
+- カメラがアクティブ状態か確認: `ros2 lifecycle get /camera/camera`
+- 🆕 照明条件の改善: ヒストグラム平坦化により改善されましたが、極端な逆光は避けてください
 
 **問題: Kachakaロボットが動作しない**
 - Kachaka制御トピックが配信されているか確認: `ros2 topic echo /kachaka/manual_control/cmd_vel`
 - Kachakaトピックが利用可能か確認: `ros2 topic list | grep kachaka`
 - ロボットがマニュアル制御モードになっているか確認
 
+**問題: 🆕 重量物積載時にロボットが回転を開始しない**
+- キックスタートの強化: `ros2 param set /face_tracker_node kick_speed 0.6`
+- キックスタート時間の延長: `ros2 param set /face_tracker_node kick_duration 0.3`
+- 最低速度の引き上げ: `ros2 param set /face_tracker_node min_angular_speed 0.2`
+
 **問題: ロボットがハンチング（振動）する**
 - `turn_gain`を小さくする: `ros2 param set /face_tracker_node turn_gain 0.001`
 - `dead_zone_percent`を大きくする: `ros2 param set /face_tracker_node dead_zone_percent 25`
+- 🆕 最低速度を下げる: `ros2 param set /face_tracker_node min_angular_speed 0.1`
 
 **問題: ロボットの反応が鈍い**
 - `turn_gain`を大きくする: `ros2 param set /face_tracker_node turn_gain 0.003`
 - `dead_zone_percent`を小さくする: `ros2 param set /face_tracker_node dead_zone_percent 15`
+- 🆕 キックスタートを強化: `ros2 param set /face_tracker_node kick_speed 0.5`
+
+**問題: 🆕 コンソール出力の確認方法**
+```bash
+# 正常時の出力例
+"No face detected - angular velocity: 0.0"  # 顔未検出
+"Face at left (kick-start) | Error: -150px | Angular vel: -0.400 rad/s"  # キックスタート中
+"Face at left (P-control) | Error: -50px | Angular vel: -0.100 rad/s"  # P制御中
+"Face at left (min-speed) | Error: -20px | Angular vel: -0.150 rad/s"  # 最低速度保証中
+"Face at center (dead zone) | Error: 10px | Angular vel: 0.000 rad/s"  # 不感帯
+```
 
 詳細な使用方法と設定については、`src/my_kachaka_apps/README.md` を参照してください。
 

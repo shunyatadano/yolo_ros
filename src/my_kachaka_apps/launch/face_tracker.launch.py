@@ -18,14 +18,32 @@ def generate_launch_description():
     
     turn_gain_arg = DeclareLaunchArgument(
         'turn_gain',
-        default_value='0.004',
+        default_value='0.002',
         description='Turn gain for face tracking P-controller'
     )
     
     dead_zone_percent_arg = DeclareLaunchArgument(
         'dead_zone_percent',
-        default_value='10',
+        default_value='20',
         description='Dead zone percentage for face tracking'
+    )
+    
+    kick_duration_arg = DeclareLaunchArgument(
+        'kick_duration',
+        default_value='0.2',
+        description='Kick-start duration in seconds to overcome static friction'
+    )
+    
+    kick_speed_arg = DeclareLaunchArgument(
+        'kick_speed',
+        default_value='0.4',
+        description='Kick-start angular velocity in rad/s'
+    )
+    
+    min_angular_speed_arg = DeclareLaunchArgument(
+        'min_angular_speed',
+        default_value='0.15',
+        description='Minimum angular velocity in rad/s for sustained tracking'
     )
 
     # RealSense camera launch
@@ -68,6 +86,9 @@ def generate_launch_description():
         parameters=[{
             'turn_gain': LaunchConfiguration('turn_gain'),
             'dead_zone_percent': LaunchConfiguration('dead_zone_percent'),
+            'kick_duration': LaunchConfiguration('kick_duration'),
+            'kick_speed': LaunchConfiguration('kick_speed'),
+            'min_angular_speed': LaunchConfiguration('min_angular_speed'),
         }],
         output='screen'
     )
@@ -76,6 +97,9 @@ def generate_launch_description():
         ip_address_arg,
         turn_gain_arg,
         dead_zone_percent_arg,
+        kick_duration_arg,
+        kick_speed_arg,
+        min_angular_speed_arg,
         realsense_launch,
         kachaka_bridge_launch,
         face_tracker_node,

@@ -29,3 +29,8 @@ __pycache__/
 
 # Ignore .DS_Store (macOS)
 .DS_Store
+
+# personal files
+run_face_detection.sh
+specification.md
+start_camera.sh
