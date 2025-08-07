@@ -59,6 +59,11 @@ class FaceTrackerNode(Node):
         enable_bilateral_desc = ParameterDescriptor(description='Enable bilateral filtering for noise reduction')
         enable_enhancement_desc = ParameterDescriptor(description='Enable all image enhancements (false = use raw image)')
         
+        # Distance control parameters (new)
+        target_distance_desc = ParameterDescriptor(description='Target distance to maintain from person (meters)')
+        linear_gain_desc = ParameterDescriptor(description='P-control gain for forward/backward movement (m/s per meter)')
+        distance_dead_zone_desc = ParameterDescriptor(description='Distance dead zone radius (meters) to prevent oscillation')
+        
         self.declare_parameter('turn_gain', 0.003, turn_gain_desc)
         self.declare_parameter('dead_zone_percent', 15, dead_zone_desc)
         self.declare_parameter('clahe_clip_limit', 8.0, clahe_clip_desc)
@@ -66,6 +71,11 @@ class FaceTrackerNode(Node):
         self.declare_parameter('gamma_correction', 1.5, gamma_desc)
         self.declare_parameter('enable_bilateral_filter', True, enable_bilateral_desc)
         self.declare_parameter('enable_image_enhancement', False, enable_enhancement_desc)
+        
+        # New distance control parameters
+        self.declare_parameter('target_distance', 0.7, target_distance_desc)
+        self.declare_parameter('linear_gain', 0.5, linear_gain_desc)
+        self.declare_parameter('distance_dead_zone', 0.15, distance_dead_zone_desc)
         
         self.turn_gain = self.get_parameter('turn_gain').get_parameter_value().double_value
         self.dead_zone_percent = self.get_parameter('dead_zone_percent').get_parameter_value().integer_value
@@ -76,6 +86,11 @@ class FaceTrackerNode(Node):
         self.gamma_correction = self.get_parameter('gamma_correction').get_parameter_value().double_value
         self.enable_bilateral_filter = self.get_parameter('enable_bilateral_filter').get_parameter_value().bool_value
         self.enable_image_enhancement = self.get_parameter('enable_image_enhancement').get_parameter_value().bool_value
+        
+        # Distance control parameters
+        self.target_distance = self.get_parameter('target_distance').get_parameter_value().double_value
+        self.linear_gain = self.get_parameter('linear_gain').get_parameter_value().double_value
+        self.distance_dead_zone = self.get_parameter('distance_dead_zone').get_parameter_value().double_value
         
         # Enable dynamic parameter updates for Task 2-B tuning
         self.add_on_set_parameters_callback(self.parameter_callback)
@@ -108,6 +123,14 @@ class FaceTrackerNode(Node):
             sensor_qos
         )
         
+        # Depth image subscriber for distance measurement
+        self.depth_subscriber = self.create_subscription(
+            Image,
+            '/camera/camera/depth/image_rect_raw',
+            self.depth_callback,
+            sensor_qos
+        )
+        
         # Timer for publishing commands
         self.timer = self.create_timer(0.1, self.publish_cmd_vel)
         
@@ -115,13 +138,23 @@ class FaceTrackerNode(Node):
         self.latest_twist = Twist()
         self.face_detected = False
         self.face_center_x = 0
+        self.face_center_y = 0
         self.image_width = 640  # Default width, will be updated from image
         self.frame_count = 0
         
+        # Distance measurement variables
+        self.latest_depth_image = None
+        self.current_distance = None
+        self.distance_measurement_valid = False
+        
         self.get_logger().info(f'Face tracker initialized with turn_gain={self.turn_gain}, dead_zone_percent={self.dead_zone_percent}%')
+        self.get_logger().info(f'Distance control: target={self.target_distance:.2f}m, linear_gain={self.linear_gain:.3f}, dead_zone={self.distance_dead_zone:.2f}m')
         self.get_logger().info('OpenCV window should appear when camera data is received...')
         self.get_logger().info('Task 2-A: Publishing control commands to /kachaka/manual_control/cmd_vel topic')
         self.get_logger().info('Task 2-B: Dynamic parameter tuning enabled - use ros2 param set to adjust gain values')
+        self.get_logger().info('Step 1: Adding depth measurement capability (console output only)')
+        self.get_logger().info('Step 2: Forward/backward control logic with console output (linear.x not published yet)')
+        self.get_logger().info('Step 3: ENABLED - Publishing both linear.x and angular.z to robot for full person tracking')
     
     def destroy_node(self):
         """Clean up resources when node is destroyed."""
@@ -162,6 +195,18 @@ class FaceTrackerNode(Node):
                 old_val = self.enable_image_enhancement
                 self.enable_image_enhancement = param.value
                 self.get_logger().info(f'Updated image enhancement from {old_val} to {self.enable_image_enhancement}')
+            elif param.name == 'target_distance':
+                old_val = self.target_distance
+                self.target_distance = param.value
+                self.get_logger().info(f'Updated target distance from {old_val:.2f}m to {self.target_distance:.2f}m')
+            elif param.name == 'linear_gain':
+                old_val = self.linear_gain
+                self.linear_gain = param.value
+                self.get_logger().info(f'Updated linear gain from {old_val:.3f} to {self.linear_gain:.3f}')
+            elif param.name == 'distance_dead_zone':
+                old_val = self.distance_dead_zone
+                self.distance_dead_zone = param.value
+                self.get_logger().info(f'Updated distance dead zone from {old_val:.2f}m to {self.distance_dead_zone:.2f}m')
         
         return SetParametersResult(successful=True)
 
@@ -234,6 +279,7 @@ class FaceTrackerNode(Node):
                     height = int(bbox.height * h)
                     
                     self.face_center_x = x + width // 2
+                    self.face_center_y = y + height // 2
                     self.face_detected = True
                     
                     self.get_logger().debug(f'Face detected at x={self.face_center_x}, image_width={self.image_width}')
@@ -263,14 +309,98 @@ class FaceTrackerNode(Node):
             self.get_logger().error(f'Error processing image: {str(e)}')
             self.face_detected = False
 
+    def depth_callback(self, msg):
+        """Process depth image for distance measurement."""
+        if not OPENCV_AVAILABLE:
+            return
+            
+        try:
+            # Store the latest depth image for distance calculation
+            self.latest_depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+            
+            # Calculate distance if face is detected
+            if self.face_detected:
+                distance = self.calculate_distance_to_face()
+                if distance is not None:
+                    self.current_distance = distance
+                    self.distance_measurement_valid = True
+                    # Step 1: Console output only - print distance
+                    self.get_logger().info(f'Distance to face: {distance:.3f}m at position ({self.face_center_x}, {self.face_center_y})')
+                else:
+                    self.distance_measurement_valid = False
+                    self.get_logger().debug('Distance measurement failed - invalid depth data')
+            else:
+                self.distance_measurement_valid = False
+                
+        except Exception as e:
+            self.get_logger().error(f'Error processing depth image: {str(e)}')
+            self.distance_measurement_valid = False
+
+    def calculate_distance_to_face(self):
+        """Calculate distance to detected face using depth image.
+        
+        Implements algorithm from specification section 5.5.1:
+        1. Get face center coordinates (already available in face_center_x, face_center_y)
+        2. Extract 5x5 pixel region around face center from depth image  
+        3. Remove invalid values (0 or NaN)
+        4. Calculate median of valid depth values
+        5. Convert to meters if needed
+        
+        Returns:
+            float: Distance in meters, or None if calculation failed
+        """
+        if self.latest_depth_image is None:
+            return None
+            
+        try:
+            h, w = self.latest_depth_image.shape[:2]
+            cx, cy = self.face_center_x, self.face_center_y
+            
+            # Ensure face center is within image bounds for 5x5 region
+            if cx < 2 or cy < 2 or cx >= w-2 or cy >= h-2:
+                self.get_logger().debug(f'Face center ({cx}, {cy}) too close to image edge for 5x5 sampling')
+                return None
+            
+            # Extract 5x5 region around face center
+            region = self.latest_depth_image[cy-2:cy+3, cx-2:cx+3]
+            
+            # Remove invalid values (0, NaN, or extremely large values)
+            valid_depths = []
+            for row in region:
+                for pixel_depth in row:
+                    if pixel_depth > 0 and not np.isnan(pixel_depth) and pixel_depth < 10000:  # Reasonable max distance
+                        valid_depths.append(pixel_depth)
+            
+            if len(valid_depths) < 3:  # Need at least 3 valid points for reliable median
+                self.get_logger().debug(f'Insufficient valid depth points: {len(valid_depths)}/25')
+                return None
+            
+            # Calculate median depth
+            median_depth = np.median(valid_depths)
+            
+            # Convert to meters based on encoding
+            # Check if depth is in mm (16UC1) or m (32FC1)
+            if self.latest_depth_image.dtype == np.uint16:
+                # Depth in mm, convert to meters
+                distance_meters = median_depth / 1000.0
+            else:
+                # Already in meters (32FC1)
+                distance_meters = float(median_depth)
+            
+            return distance_meters
+            
+        except Exception as e:
+            self.get_logger().error(f'Error calculating distance: {str(e)}')
+            return None
+
     def publish_cmd_vel(self):
         twist = Twist()
         
         if not self.face_detected:
-            # No face detected, stop rotation
+            # No face detected, stop all movement (safety requirement FR5)
             twist.linear.x = 0.0
             twist.angular.z = 0.0
-            print("No face detected - angular velocity: 0.0")
+            print("No face detected - all movement stopped (linear: 0.0, angular: 0.0)")
         else:
             # Task 1-B: 旋回制御ロジックの実装 + Task 2-A: カチャカへの制御コマンド送信
             
@@ -294,13 +424,48 @@ class FaceTrackerNode(Node):
                 angular_velocity = self.turn_gain * error_x
                 face_position = "right" if error_x > 0 else "left"
             
+            # Forward/backward movement control (Step 2: Console output only)
+            linear_velocity = 0.0  # Default no movement
+            distance_status = "no_distance"
+            
+            if self.distance_measurement_valid and self.current_distance is not None:
+                # Calculate distance error
+                error_dist = self.current_distance - self.target_distance
+                
+                # Apply distance dead zone logic
+                if abs(error_dist) <= self.distance_dead_zone:
+                    # Within dead zone - no forward/backward movement
+                    linear_velocity = 0.0
+                    distance_status = "dead_zone"
+                else:
+                    # Outside dead zone - apply P-control for forward/backward movement
+                    # Note: negative sign so robot moves forward when distance is too large
+                    linear_velocity = -self.linear_gain * error_dist
+                    distance_status = "too_far" if error_dist > 0 else "too_close"
+                    
+                    # Apply velocity clipping for safety (as per specification)
+                    linear_velocity = max(-0.2, min(0.2, linear_velocity))
+                
+                # Step 2: Console output for distance control (linear.x calculation)
+                print(f"Distance: {self.current_distance:.3f}m | Target: {self.target_distance:.3f}m | Error: {error_dist:+.3f}m | Status: {distance_status} | Linear vel: {linear_velocity:+6.3f} m/s")
+            else:
+                # No valid distance measurement - stop forward/backward movement for safety (FR5)
+                linear_velocity = 0.0
+                distance_status = "no_distance"
+                if self.face_detected:
+                    print(f"Distance: invalid | Linear vel: {linear_velocity:+6.3f} m/s (no depth data - safety stop)")
+            
             # 5. Print calculated angular velocity to terminal
             print(f"Face at {face_position} | Error: {error_x:4.0f}px | Angular vel: {angular_velocity:+6.3f} rad/s | Gain: {self.turn_gain:.6f}")
             
-            # Task 2-A: Send calculated angular velocity to Kachaka
-            # Fixed linear.x = 0 (no forward/backward movement)
-            twist.linear.x = 0.0
-            twist.angular.z = angular_velocity  # Send calculated angular velocity
+            # Apply velocity clipping for safety (as per specification 5.5.2)
+            # linear.x: [-0.2, 0.2] m/s, angular.z: [-0.5, 0.5] rad/s
+            linear_velocity_clipped = max(-0.2, min(0.2, linear_velocity))
+            angular_velocity_clipped = max(-0.5, min(0.5, angular_velocity))
+            
+            # Step 3: Enable full control - send both linear and angular velocities to Kachaka
+            twist.linear.x = linear_velocity_clipped
+            twist.angular.z = angular_velocity_clipped
         
         # Task 2-A: Publish Twist message to /cmd_vel topic
         self.cmd_vel_publisher.publish(twist)
