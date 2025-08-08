@@ -1,0 +1,12 @@
+teleop_twist_joy:
+  ros__parameters:
+    axis_linear:
+      x: 1  # Left stick vertical (forward/backward)
+    scale_linear:
+      x: 0.5
+    axis_angular:
+      yaw: 0  # Left stick horizontal (turn left/right)  
+    scale_angular:
+      yaw: 1.0
+    enable_button: 4  # L1 button (button 4)
+    enable_turbo_button: 5  # R1 button (button 5)
