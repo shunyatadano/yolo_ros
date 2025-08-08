@@ -231,7 +231,7 @@ ros2 lifecycle set /camera/camera activate
 - カメラを使用しない場合は `deactivate` でリソースを解放できます
 - システム起動時に自動でアクティベーションしたい場合は、起動スクリプトに上記コマンドを含めてください
 
-### 顔検出アプリケーション（my_kachaka_apps）の使用方法
+### 顔検出・追従アプリケーション（my_kachaka_apps）の使用方法
 
 このワークスペースには、RealSenseカメラを使用した顔検出・追従機能が含まれています。
 
@@ -240,9 +240,11 @@ ros2 lifecycle set /camera/camera activate
 - **リアルタイム表示**: cv2.imshowによるカメラ映像と検出結果の表示
 - **バウンディングボックス**: 検出された顔をMediaPipeの描画機能で表示
 - **画像強化**: 逆光・暗所での検出性能向上のための画像前処理機能
+- **追従制御**: 人物を検出し、設定距離を保ちながら追従する機能
 - **制御コマンド送信**: `/kachaka/manual_control/cmd_vel`トピックに制御コマンドを送信
 - **デバッグ機能**: 検出結果を `/tmp/face_detection_test_*.jpg` に自動保存
 - **柔軟なパラメータ設定**: 動的パラメータ調整によるリアルタイム制御チューニング
+- **テレオペ機能**: キーボードおよびジョイスティックによる手動制御
 
 #### 🔧 最新機能強化（2025年1月実装）
 **アップデート①: 顔検出アルゴリズムの向上**
@@ -251,7 +253,17 @@ ros2 lifecycle set /camera/camera activate
 - **画像強化処理**: bilateral filter、gamma correction、CLAHE による逆光・暗所対応
 - **設定可能な前処理**: `enable_image_enhancement` パラメータで生画像/強化画像を選択可能
 
-**アップデート②: 柔軟な制御設定**
+**アップデート②: 距離制御機能の追加**
+- **前後移動制御**: 深度カメラを使用して人物との距離を測定し、設定距離を維持
+- **適応制御**: 距離エラーに応じて移動速度を調整する適応制御機能
+- **安全機能**: デッドゾーン設定による振動防止と、人物を見失った際の安全停止
+
+**アップデート③: テレオペレーション機能**
+- **キーボード制御**: teleop_twist_keyboard による手動制御
+- **ジョイスティック制御**: PS4/Xbox コントローラーによる手動制御
+- **起動ファイル統合**: 簡単な起動コマンドでテレオペ機能を利用可能
+
+**アップデート④: 柔軟な制御設定**
 - **動的パラメータ調整**: 実行中にリアルタイムでパラメータ変更可能
 - **画像処理レベル調整**: 照明条件に応じた最適化設定
 
@@ -260,6 +272,9 @@ ros2 lifecycle set /camera/camera activate
 | :--- | :--- | :--- | :--- |
 | `turn_gain` | Double | 0.003 | P制御の比例ゲイン [rad/s per pixel] |
 | `dead_zone_percent` | Integer | 15 | 不感帯幅の画像幅に対する% |
+| `target_distance` | Double | 0.5 | 追従時の目標距離 [m] |
+| `linear_gain` | Double | 0.8 | 前後移動制御の比例ゲイン |
+| `distance_dead_zone` | Double | 0.1 | 距離制御のデッドゾーン [m] |
 | `enable_image_enhancement` | Boolean | false | 画像強化処理の有効/無効 |
 | `clahe_clip_limit` | Double | 8.0 | CLAHE contrast enhancement clip limit |
 | `clahe_grid_size` | Integer | 6 | CLAHE tile grid size |
@@ -276,7 +291,21 @@ ros2 lifecycle set /camera/camera activate
 ```bash
 cd ~/ws_kachaka
 source install/setup.bash
+
+# 顔追従システムの起動（Launch file使用 - 推奨）
+ros2 launch my_kachaka_apps face_tracker.launch.py
+
+# または直接ノードを起動
 ros2 run my_kachaka_apps face_tracker_node
+```
+
+**テレオペレーション機能の使用**:
+```bash
+# キーボード制御
+ros2 launch my_kachaka_apps teleop_keyboard.launch.py
+
+# ジョイスティック制御（PS4/Xboxコントローラー）
+ros2 launch my_kachaka_apps teleop_joy.launch.py
 ```
 
 #### 期待される動作
@@ -284,9 +313,11 @@ ros2 run my_kachaka_apps face_tracker_node
 - **顔の検出**: カメラの前に顔を向けるとMediaPipeの検出枠で囲まれる
 - **高精度検出**: MediaPipeにより従来のHaar Cascadeより高精度な検出
 - **画像強化**: 逆光・暗所でも安定した検出性能
-- **制御値出力**: 顔の位置と計算された角速度がコンソールに表示
+- **追従制御**: ロボットが人物を中央に捉えるように旋回し、設定距離を保つように前後移動
+- **制御値出力**: 顔の位置、距離、計算された速度がコンソールに表示
 - **制御コマンド**: `/kachaka/manual_control/cmd_vel`トピックに制御コマンドが送信される
-- **デッドゾーン**: 顔が中央付近にある時は回転を停止（振動防止）
+- **デッドゾーン**: 顔が中央付近かつ目標距離付近にある時は動作停止（振動防止）
+- **安全機能**: 人物を見失った際の自動停止
 - **テスト画像**: 30フレームごとに検出結果が `/tmp/` に保存
 
 #### 🎛️ パラメータ調整方法
@@ -324,6 +355,11 @@ ros2 param set /face_tracker_node turn_gain 0.002
 
 # 不感帯の調整
 ros2 param set /face_tracker_node dead_zone_percent 20
+
+# 距離制御パラメータの調整
+ros2 param set /face_tracker_node target_distance 1.0
+ros2 param set /face_tracker_node linear_gain 0.6
+ros2 param set /face_tracker_node distance_dead_zone 0.15
 
 # 画像強化パラメータの調整
 ros2 param set /face_tracker_node gamma_correction 1.8

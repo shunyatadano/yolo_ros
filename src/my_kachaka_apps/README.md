@@ -1,21 +1,27 @@
-# KachakaTalk Face Tracker
+# KachakaTalk Face Tracker & Person Following System
 
-This package implements Function 4.1 (人物追従機能) from the KachakaTalk project specification - a face tracking system that detects faces from RealSense camera input and controls the Kachaka robot to keep the detected face centered in the camera view.
+This package implements advanced face detection and person following functionality - a comprehensive tracking system that detects faces from RealSense camera input, measures distance using depth data, and controls the Kachaka robot to follow the person while maintaining a specified distance.
 
 ## Features
 
-- **Face Detection**: Uses OpenCV Haar Cascade classifier to detect human faces
-- **Visual Display**: Shows camera feed with green bounding boxes around detected faces via cv2.imshow
-- **P-Controller**: Implements proportional control for robot rotation based on face position
-- **Terminal Output**: Real-time display of face position and calculated angular velocity values
-- **Dead Zone**: Configurable dead zone to prevent oscillation when face is centered
+- **Advanced Face Detection**: Uses MediaPipe for high-precision human face detection
+- **Distance Control**: Uses RealSense depth camera to measure and maintain target distance
+- **Visual Display**: Shows camera feed with MediaPipe detection results via cv2.imshow
+- **Dual-Axis Control**: Implements proportional control for both rotation and forward/backward movement
+- **Image Enhancement**: Built-in image preprocessing for low-light and backlit conditions
+- **Real-time Output**: Live display of face position, distance, and calculated velocities
+- **Adaptive Control**: Speed adjustment based on distance error magnitude
+- **Safety Features**: Dead zone logic and automatic stop when person is lost
+- **Teleop Integration**: Keyboard and joystick control options
 - **ROS2 Integration**: Fully integrated with ROS2 ecosystem
 - **Test Image Saving**: Automatically saves detection results to `/tmp/face_detection_test_*.jpg` for debugging
 
 ## Architecture
 
 ```
-[RealSense Camera] --/camera/color/image_raw--> [Face Tracker Node] --/cmd_vel--> [Kachaka Robot]
+[RealSense Camera] --+-- /camera/color/image_raw -----> [Face Tracker Node] --/kachaka/manual_control/cmd_vel--> [Kachaka Robot]
+                     |
+                     +-- /camera/depth/image_rect_raw --> [Distance Control]
 ```
 
 ## Requirements
@@ -33,6 +39,11 @@ This package implements Function 4.1 (人物追従機能) from the KachakaTalk p
   - `rclpy`
   - `sensor_msgs`
   - `geometry_msgs`
+  - `mediapipe`
+  - `numpy`
+- Additional packages:
+  - `teleop_twist_keyboard` (for manual control)
+  - `teleop_twist_joy` and `joy` (for joystick control)
 
 ## Installation
 

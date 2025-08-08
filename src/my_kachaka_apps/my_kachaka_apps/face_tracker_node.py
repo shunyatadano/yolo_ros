@@ -73,9 +73,9 @@ class FaceTrackerNode(Node):
         self.declare_parameter('enable_image_enhancement', False, enable_enhancement_desc)
         
         # New distance control parameters
-        self.declare_parameter('target_distance', 0.7, target_distance_desc)
-        self.declare_parameter('linear_gain', 0.5, linear_gain_desc)
-        self.declare_parameter('distance_dead_zone', 0.15, distance_dead_zone_desc)
+        self.declare_parameter('target_distance', 0.5, target_distance_desc)
+        self.declare_parameter('linear_gain', 0.8, linear_gain_desc)
+        self.declare_parameter('distance_dead_zone', 0.1, distance_dead_zone_desc)
         
         self.turn_gain = self.get_parameter('turn_gain').get_parameter_value().double_value
         self.dead_zone_percent = self.get_parameter('dead_zone_percent').get_parameter_value().integer_value
@@ -103,10 +103,10 @@ class FaceTrackerNode(Node):
         self.mp_drawing = mp.solutions.drawing_utils
         self.face_detection = self.mp_face_detection.FaceDetection(min_detection_confidence=0.5)
         
-        # QoS profile for sensor data - best effort reliability
+        # QoS profile for sensor data - must match publisher (RELIABLE)
         sensor_qos = QoSProfile(
             depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE
         )
         
@@ -146,12 +146,18 @@ class FaceTrackerNode(Node):
         self.latest_depth_image = None
         self.current_distance = None
         self.distance_measurement_valid = False
+        self.depth_callback_count = 0
+        self.depth_debug_timer = self.create_timer(5.0, self.debug_depth_status)
+        
+        # OpenCV window will be created when first image is received
+        self.window_created = False
         
         self.get_logger().info(f'Face tracker initialized with turn_gain={self.turn_gain}, dead_zone_percent={self.dead_zone_percent}%')
         self.get_logger().info(f'Distance control: target={self.target_distance:.2f}m, linear_gain={self.linear_gain:.3f}, dead_zone={self.distance_dead_zone:.2f}m')
-        self.get_logger().info('OpenCV window should appear when camera data is received...')
+        self.get_logger().info('OpenCV window created and waiting for camera data...')
         self.get_logger().info('Task 2-A: Publishing control commands to /kachaka/manual_control/cmd_vel topic')
         self.get_logger().info('Task 2-B: Dynamic parameter tuning enabled - use ros2 param set to adjust gain values')
+        self.get_logger().info('Subscribed to: /camera/camera/color/image_raw')
         self.get_logger().info('Step 1: Adding depth measurement capability (console output only)')
         self.get_logger().info('Step 2: Forward/backward control logic with console output (linear.x not published yet)')
         self.get_logger().info('Step 3: ENABLED - Publishing both linear.x and angular.z to robot for full person tracking')
@@ -213,6 +219,10 @@ class FaceTrackerNode(Node):
     def image_callback(self, msg):
         if not OPENCV_AVAILABLE:
             return
+        
+        # Debug: Log that callback was called
+        if self.frame_count == 0:
+            self.get_logger().info('First image callback received!')
             
         try:
             # Convert ROS image to OpenCV format
@@ -292,6 +302,12 @@ class FaceTrackerNode(Node):
             
             # Display the image with face detection results
             try:
+                # Create window only when first image is received (like in test_mp.py)
+                if not self.window_created:
+                    cv2.namedWindow('Face Detection', cv2.WINDOW_AUTOSIZE)
+                    self.window_created = True
+                    self.get_logger().info('OpenCV window created successfully')
+                
                 cv2.imshow('Face Detection', display_image)
                 cv2.waitKey(1)  # Allow OpenCV to process GUI events
                 
@@ -309,10 +325,20 @@ class FaceTrackerNode(Node):
             self.get_logger().error(f'Error processing image: {str(e)}')
             self.face_detected = False
 
+    def debug_depth_status(self):
+        """Debug callback to check depth camera status."""
+        self.get_logger().info(f'Depth status: callbacks received={self.depth_callback_count}, valid_measurement={self.distance_measurement_valid}')
+        if self.depth_callback_count == 0:
+            self.get_logger().warn('No depth callbacks received - check if depth camera is publishing')
+
     def depth_callback(self, msg):
         """Process depth image for distance measurement."""
         if not OPENCV_AVAILABLE:
             return
+        
+        self.depth_callback_count += 1
+        if self.depth_callback_count == 1:
+            self.get_logger().info('First depth callback received!')
             
         try:
             # Store the latest depth image for distance calculation
@@ -440,7 +466,16 @@ class FaceTrackerNode(Node):
                 else:
                     # Outside dead zone - apply P-control for forward/backward movement
                     # Note: negative sign so robot moves forward when distance is too large
-                    linear_velocity = -self.linear_gain * error_dist
+                    base_velocity = -self.linear_gain * error_dist
+                    
+                    # Apply more aggressive control for larger distance errors
+                    if abs(error_dist) > 1.0:  # Very far (>1m error)
+                        linear_velocity = base_velocity * 1.5  # Boost speed
+                    elif abs(error_dist) > 0.5:  # Moderately far (>0.5m error)
+                        linear_velocity = base_velocity * 1.2  # Slight boost
+                    else:
+                        linear_velocity = base_velocity
+                    
                     distance_status = "too_far" if error_dist > 0 else "too_close"
                     
                     # Apply velocity clipping for safety (as per specification)
