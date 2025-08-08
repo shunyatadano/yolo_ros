@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/face_tracker.launch.py', 'launch/teleop_keyboard.launch.py', 'launch/teleop_joy.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/face_tracker.launch.py', 'launch/teleop_keyboard.launch.py', 'launch/teleop_joy.launch.py', 'launch/mission_system.launch.py']),
         ('share/' + package_name + '/config', ['config/teleop_joy.yaml']),
     ],
     install_requires=['setuptools'],
@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'face_tracker_node = my_kachaka_apps.face_tracker_node:main',
+            'mission_controller = my_kachaka_apps.mission_controller:main',
         ],
     },
 )

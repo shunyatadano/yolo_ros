@@ -64,6 +64,9 @@ class FaceTrackerNode(Node):
         linear_gain_desc = ParameterDescriptor(description='P-control gain for forward/backward movement (m/s per meter)')
         distance_dead_zone_desc = ParameterDescriptor(description='Distance dead zone radius (meters) to prevent oscillation')
         
+        # Activity control parameter for mission_controller
+        is_active_desc = ParameterDescriptor(description='Enable/disable face tracking and cmd_vel publishing')
+        
         self.declare_parameter('turn_gain', 0.003, turn_gain_desc)
         self.declare_parameter('dead_zone_percent', 15, dead_zone_desc)
         self.declare_parameter('clahe_clip_limit', 8.0, clahe_clip_desc)
@@ -76,6 +79,9 @@ class FaceTrackerNode(Node):
         self.declare_parameter('target_distance', 0.5, target_distance_desc)
         self.declare_parameter('linear_gain', 0.8, linear_gain_desc)
         self.declare_parameter('distance_dead_zone', 0.1, distance_dead_zone_desc)
+        
+        # Activity control parameter
+        self.declare_parameter('is_active', True, is_active_desc)
         
         self.turn_gain = self.get_parameter('turn_gain').get_parameter_value().double_value
         self.dead_zone_percent = self.get_parameter('dead_zone_percent').get_parameter_value().integer_value
@@ -91,6 +97,9 @@ class FaceTrackerNode(Node):
         self.target_distance = self.get_parameter('target_distance').get_parameter_value().double_value
         self.linear_gain = self.get_parameter('linear_gain').get_parameter_value().double_value
         self.distance_dead_zone = self.get_parameter('distance_dead_zone').get_parameter_value().double_value
+        
+        # Activity control parameter
+        self.is_active = self.get_parameter('is_active').get_parameter_value().bool_value
         
         # Enable dynamic parameter updates for Task 2-B tuning
         self.add_on_set_parameters_callback(self.parameter_callback)
@@ -154,6 +163,7 @@ class FaceTrackerNode(Node):
         
         self.get_logger().info(f'Face tracker initialized with turn_gain={self.turn_gain}, dead_zone_percent={self.dead_zone_percent}%')
         self.get_logger().info(f'Distance control: target={self.target_distance:.2f}m, linear_gain={self.linear_gain:.3f}, dead_zone={self.distance_dead_zone:.2f}m')
+        self.get_logger().info(f'Activity control: is_active={self.is_active}')
         self.get_logger().info('OpenCV window created and waiting for camera data...')
         self.get_logger().info('Task 2-A: Publishing control commands to /kachaka/manual_control/cmd_vel topic')
         self.get_logger().info('Task 2-B: Dynamic parameter tuning enabled - use ros2 param set to adjust gain values')
@@ -213,11 +223,21 @@ class FaceTrackerNode(Node):
                 old_val = self.distance_dead_zone
                 self.distance_dead_zone = param.value
                 self.get_logger().info(f'Updated distance dead zone from {old_val:.2f}m to {self.distance_dead_zone:.2f}m')
+            elif param.name == 'is_active':
+                old_val = self.is_active
+                self.is_active = param.value
+                self.get_logger().info(f'Face tracking activity changed from {old_val} to {self.is_active}')
         
         return SetParametersResult(successful=True)
 
     def image_callback(self, msg):
         if not OPENCV_AVAILABLE:
+            return
+        
+        # Check if face tracking is active
+        if not self.is_active:
+            # Still process image for display but don't update face detection state
+            self.face_detected = False
             return
         
         # Debug: Log that callback was called
@@ -421,6 +441,13 @@ class FaceTrackerNode(Node):
 
     def publish_cmd_vel(self):
         twist = Twist()
+        
+        # Check if face tracking is active - if not, stop all movement
+        if not self.is_active:
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.cmd_vel_publisher.publish(twist)
+            return
         
         if not self.face_detected:
             # No face detected, stop all movement (safety requirement FR5)
