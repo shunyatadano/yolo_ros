@@ -34,3 +34,4 @@ __pycache__/
 run_face_detection.sh
 specification.md
 start_camera.sh
+docs/token.txt
