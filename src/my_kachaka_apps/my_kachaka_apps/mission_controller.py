@@ -22,7 +22,7 @@ from geometry_msgs.msg import PoseStamped, Twist, PointStamped
 from sensor_msgs.msg import Image, CameraInfo
 from yolo_msgs.msg import DetectionArray
 from nav2_msgs.action import NavigateToPose, FollowWaypoints
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_ros import TransformException
@@ -114,6 +114,9 @@ class MissionController(Node):
         self.navigate_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.follow_waypoints_client = ActionClient(self, FollowWaypoints, 'follow_waypoints')
         
+        # Publisher for mission state
+        self.mission_state_publisher = self.create_publisher(String, '/mission_state', 10)
+        
         # Timer for state machine processing
         self.state_timer = self.create_timer(0.5, self.state_machine_update)  # 2Hz update rate
         
@@ -128,6 +131,9 @@ class MissionController(Node):
         
         # Start patrolling
         self.start_patrolling()
+        
+        # Publish initial state
+        self.publish_mission_state()
     
     def create_patrol_poses(self):
         """Create PoseStamped messages from patrol waypoint parameters."""
@@ -147,6 +153,12 @@ class MissionController(Node):
                 poses.append(pose)
         
         return poses
+    
+    def publish_mission_state(self):
+        """Publish current mission state."""
+        msg = String()
+        msg.data = self.current_state.value
+        self.mission_state_publisher.publish(msg)
     
     def yolo_callback(self, msg):
         """Process YOLO detection results."""
@@ -225,6 +237,7 @@ class MissionController(Node):
         self.get_logger().info(f'State transition: {self.current_state.value} → PATROLLING')
         self.current_state = MissionState.PATROLLING
         self.state_start_time = time.time()
+        self.publish_mission_state()
         
         # Stop face tracking
         self.set_face_tracker_active(False)
@@ -241,6 +254,7 @@ class MissionController(Node):
         self.get_logger().info(f'State transition: {self.current_state.value} → APPROACHING')
         self.current_state = MissionState.APPROACHING
         self.state_start_time = time.time()
+        self.publish_mission_state()
         
         # Stop face tracking if it was active
         self.set_face_tracker_active(False)
@@ -262,6 +276,7 @@ class MissionController(Node):
         self.get_logger().info(f'State transition: {self.current_state.value} → TRACKING')
         self.current_state = MissionState.TRACKING
         self.state_start_time = time.time()
+        self.publish_mission_state()
         
         # Cancel navigation and start face tracking
         self.cancel_current_navigation()

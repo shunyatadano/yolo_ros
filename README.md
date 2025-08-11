@@ -1,26 +1,43 @@
-# Kachaka ROS2 Workspace
+# Kachaka Mission System - Speaker Detection and Following
 
-このワークスペースは、Kachaka ロボット用のROS2パッケージ群を含んでいます。
+このワークスペースは、**Kachakaロボット用の自律的な話者発見追従システム**を実装しています。ロボットが自動で屋内を巡回し、話している人を発見・接近・追従する完全統合システムです。
 
-## 概要
+## 🎯 システム概要
 
-このワークスペースには以下のパッケージが含まれています：
+### 主要機能
+- **🔍 人物検出**: YOLOv8による2m以上の遠距離人物検出  
+- **🧭 自律ナビゲーション**: Nav2を使用した巡回・接近移動制御
+- **👤 顔追従**: MediaPipeによる近距離での精密な人物追従
+- **🤖 状態遷移**: PATROLLING → APPROACHING → TRACKING の自動切り替え
+- **📊 リアルタイム制御**: 動的パラメータ調整による最適化
 
+### システム構成パッケージ
+- **my_kachaka_apps**: ミッションコントローラーと顔追従システム（メイン機能）
+- **yolo_ros**: 人物検出用YOLOv8統合
 - **kachaka_grpc_ros2_bridge**: Kachaka API と ROS2 の間のgRPCブリッジ
-- **kachaka_interfaces**: Kachakaシステム用のカスタムROS2メッセージとアクション定義
+- **kachaka_nav2_bringup**: Nav2ナビゲーション設定
+- **realsense-ros**: RealSenseカメラ統合
+- **kachaka_interfaces**: カスタムROS2メッセージとアクション定義
 - **kachaka_description**: Kachakaロボットの3DモデルとURDF記述
-- **kachaka_follow**: LIDARを使用して最も近いオブジェクトに向かって移動するサンプルノード
-- **kachaka_nav2_bringup**: Nav2ナビゲーションスタック用の起動ファイルと設定
-- **my_kachaka_apps**: 顔検出・追従機能を含むカスタムアプリケーション集
 
-## 前提条件
+### アーキテクチャ
+```
+[Kachaka Robot] ←→ [gRPC Bridge] ←→ [Mission Controller] ←→ [Nav2]
+                                         ↓
+[RealSense Camera] → [YOLO Detection] ↗   ↘ [Face Tracker]
+```
+
+## 🚀 初心者向けチュートリアル
 
 ### システム要件
-- Ubuntu 22.04 LTS
-- ROS2 Humble Hawksbill
-- Docker (プロトコルバッファファイル生成用)
+- **Ubuntu 22.04 LTS**
+- **ROS2 Humble Hawksbill** 
+- **Kachaka Robot** (ネットワーク接続済み)
+- **RealSense D435 Camera** (推奨)
 
-### 必要なパッケージ
+### 📦 必要なパッケージのインストール
+
+#### 1. 基本パッケージ
 ```bash
 sudo apt update
 sudo apt install -y \
@@ -28,86 +45,262 @@ sudo apt install -y \
     libprotobuf-dev \
     protobuf-compiler-grpc \
     libopencv-dev \
-    ros-humble-rmw-cyclonedds-cpp
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-nav2-bringup \
+    ros-humble-tf2-tools \
+    python3-pip
 ```
 
-### RMW実装の設定
-KachakaのDockerブリッジとの互換性のため、CycloneDDSを使用することを推奨します：
+#### 2. Pythonライブラリ
 ```bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export ROS_DOMAIN_ID=0
+pip3 install mediapipe opencv-python numpy
 ```
 
-### Kachaka API
-このワークスペースをビルドするには、Kachaka APIリポジトリが必要です：
+#### 3. YOLOモデルファイル
 ```bash
-# ~/kachaka-api ディレクトリにKachaka APIが配置されていることを確認してください
+cd ~/ws_kachaka
+# YOLOv8モデルは自動ダウンロードされますが、事前に取得する場合：
+wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8m.pt
+```
+
+### 🗺️ 地図の準備（重要！）
+**システム実行前に必ず地図を作成してください：**
+
+#### 地図の確認方法
+```bash
+cd ~/kachaka-api/python/demos/grpc_samples
+python3 get_map_list.py <KACHAKA_IP>:26400
+```
+
+#### 地図がない場合の作成手順
+1. **Kachakaスマートフォンアプリ**を起動
+2. **「地図作成」**機能を選択
+3. **手動操縦**でロボットを環境内で移動させる
+4. **地図を保存**する
+5. アプリで地図が正しく保存されたことを確認
+
+### 🔧 Kachaka API の準備
+```bash
+# ~/kachaka-api ディレクトリにKachaka APIが配置されていることを確認
 ls ~/kachaka-api/protos/kachaka-api.proto
+
+# プロトコルバッファファイルを生成
+~/kachaka-api/tools/generate_proto_for_ros2.sh
 ```
 
-## セットアップ手順
+## ⚙️ セットアップ手順（初回のみ）
 
 ### 1. ワークスペースの準備
 ```bash
-cd ~/kachaka_ws
+cd ~/ws_kachaka
 source /opt/ros/humble/setup.bash
 ```
 
-### 2. プロトコルバッファファイルの生成
+### 2. 依存関係のインストール
+```bash
+# ROS2パッケージの依存関係を自動解決
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+### 3. プロトコルバッファファイルの生成とコピー
 ```bash
 # Kachaka APIからプロトコルバッファファイルを生成
 ~/kachaka-api/tools/generate_proto_for_ros2.sh
 
 # 生成されたファイルをワークスペースにコピー
-cp -r ~/kachaka-api/ros2/kachaka_grpc_ros2_bridge/gen-src ~/kachaka_ws/src/kachaka_grpc_ros2_bridge/
+cp -r ~/kachaka-api/ros2/kachaka_grpc_ros2_bridge/gen-src ~/ws_kachaka/src/kachaka_grpc_ros2_bridge/
 ```
 
-### 3. ビルド
+### 4. ワークスペースのビルド
 ```bash
-cd ~/kachaka_ws
+cd ~/ws_kachaka
 colcon build --cmake-args -DUSE_LIFECYCLE_NODE=ON
-```
 
-**注意: RealSense ROS パッケージについて**
-このワークスペースには Intel RealSense カメラ用のROS2パッケージ (`realsense-ros`) が含まれています。ビルド時にFastRTPS依存関係の問題が発生する場合がありますが、これは解決済みです。ただし、以下の点にご注意ください：
-
-- **修正内容**: `realsense2_camera` パッケージのCMakeLists.txtに、FastRTPS cmake ターゲットが見つからない問題を回避するためのワークアラウンドが適用されています
-- **影響**: この修正により、RealSenseカメラの基本機能は正常に動作しますが、DDS通信の一部高度な機能が制限される可能性があります
-- **推奨事項**: 本格的なRealSenseカメラ開発を行う場合は、Intel公式のRealSense SDK環境設定を推奨します
-- **⚠️ 重要**: このワークスペースでは `USE_LIFECYCLE_NODE=ON` でビルドされているため、RealSenseカメラはLifecycleNodeとして起動します。トピックを有効にするには手動でのアクティベーションが必要です（詳細は「RealSenseカメラの使用方法」セクションを参照）
-
-### 4. 環境の設定
-```bash
+# ビルド成功後、環境を設定
 source install/setup.bash
 ```
 
-## 使用方法
-
-### Kachaka gRPCブリッジの起動
-
-#### 方法1: Dockerブリッジ（推奨）
+### 5. システム準備状況の確認
 ```bash
-# Kachaka APIブリッジをDockerで起動
+# システムの準備状況を確認（重要！）
+python3 kachaka_map_manager.py <KACHAKA_IP>
+```
+
+## 🚀 システムの実行
+
+### 方法1: 簡単起動（初心者推奨）
+```bash
+cd ~/ws_kachaka
+source install/setup.bash
+
+# 一発起動スクリプトを使用
+./start_mission_system.sh <KACHAKA_IP>
+
+# 例: ./start_mission_system.sh 192.168.118.95
+```
+
+### 方法2: 手動起動（上級者向け）
+
+#### ステップ1: gRPCブリッジ起動
+```bash
 cd ~/kachaka-api/tools/ros2_bridge
-
-# 基本的な起動方法
-./start_bridge.sh <KachakaのIPアドレス>
-
-# 例: ./start_bridge.sh 192.168.118.95
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_DOMAIN_ID=0
+sudo -E ./start_bridge.sh <KACHAKA_IP>
 ```
 
-**⚠️ 重要なトラブルシューティング: RMW実装エラー**
+#### ステップ2: ミッションシステム起動
+```bash
+cd ~/ws_kachaka
+source install/setup.bash
 
-Dockerブリッジ起動時に以下のエラーが発生する場合があります：
+# 完全システム（ナビゲーション有効）
+ros2 launch my_kachaka_apps mission_system.launch.py enable_nav2:=true
+
+# 基本システム（ナビゲーションなし）
+ros2 launch my_kachaka_apps mission_system.launch.py
 ```
-[ERROR] [rcl]: Error getting RMW implementation identifier / RMW implementation not installed 
-(expected identifier of 'rmw_cyclonedx_cpp'), with error message 'failed to load shared library 
+
+### 実行可能なコマンド一覧
+
+#### 個別コンポーネント実行
+```bash
+# YOLO人物検出のみ
+ros2 launch yolo_bringup yolov8.launch.py
+
+# 顔追従システムのみ
+ros2 run my_kachaka_apps face_tracker_node
+
+# ミッションコントローラーのみ
+ros2 run my_kachaka_apps mission_controller
+
+# ナビゲーションのみ
+ros2 launch kachaka_nav2_bringup navigation_launch.py
+```
+
+#### テレオペ（手動制御）
+```bash
+# キーボード制御
+ros2 launch my_kachaka_apps teleop_keyboard.launch.py
+
+# ジョイスティック制御 
+ros2 launch my_kachaka_apps teleop_joy.launch.py
+```
+
+#### テスト・確認コマンド
+```bash
+# システム準備確認
+python3 kachaka_map_manager.py <KACHAKA_IP>
+
+# ミッションコントローラーテスト
+python3 test_mission_controller.py
+
+# 顔追従制御テスト
+python3 test_is_active.py
+```
+
+## 🎮 システム操作とモニタリング
+
+### システム状態の監視
+```bash
+# 実行中のノード確認
+ros2 node list
+
+# 人物検出状況の監視
+ros2 topic echo /yolo/detections
+
+# ロボット制御コマンドの監視
+ros2 topic echo /kachaka/manual_control/cmd_vel
+
+# カメラ画像の確認
+ros2 topic echo /camera/camera/color/image_raw --once
+```
+
+### パラメータによる制御
+```bash
+# 顔追従システムの有効/無効切り替え
+ros2 param set /face_tracker_node is_active false  # 停止
+ros2 param set /face_tracker_node is_active true   # 再開
+
+# 追従距離の調整
+ros2 param set /face_tracker_node target_distance 0.8  # 80cm
+
+# 回転速度の調整 
+ros2 param set /face_tracker_node turn_gain 0.002
+
+# ミッションコントローラーの調整
+ros2 param set /mission_controller approach_distance_threshold 2.0
+ros2 param set /mission_controller person_lost_timeout 10.0
+```
+
+### 🔄 状態遷移システム
+
+1. **PATROLLING（巡回）**: 事前定義されたウェイポイントを巡回
+2. **APPROACHING（接近）**: YOLO検出した人物に向かって移動
+3. **TRACKING（追従）**: 近距離での顔追従制御
+
+## 🛠️ トラブルシューティング
+
+### よくある問題と解決法
+
+#### 1. 「カメラデータが取得できない」
+
+**症状**: `/camera/camera/color/image_raw` にデータが流れない
+
+**解決方法**:
+```bash
+# RealSenseカメラの手動アクティベーション
+ros2 lifecycle set /camera/camera configure
+ros2 lifecycle set /camera/camera activate
+
+# カメラトピックの確認
+ros2 topic list | grep camera
+ros2 topic echo /camera/camera/color/image_raw --once
+```
+
+#### 2. 「人物検出ができない」
+**症状**: YOLOが人を検出しない
+
+**解決方法**:
+```bash
+# YOLO検出結果の確認
+ros2 topic echo /yolo/detections
+
+# YOLOデバッグ画像の確認
+ros2 topic echo /yolo/dbg_image
+
+# YOLOモデルファイルの確認
+ls -la ~/ws_kachaka/yolov8m.pt
+```
+
+#### 3. 「ナビゲーションが動かない」
+**症状**: ロボットが移動しない、Nav2エラー
+
+**解決方法**:
+```bash
+# 地図データの確認
+ros2 topic echo /kachaka/mapping/map --once
+
+# Nav2ノードの確認
+ros2 node list | grep nav2
+ros2 action list | grep navigate
+
+# 地図の再作成が必要な場合はKachakaアプリで実行
+```
+
+#### 4. **⚠️ 重要: gRPCブリッジRMW実装エラー**
+
+**症状**: Dockerブリッジ起動時にRMW実装エラーが発生
+```
+[ERROR] [rcl]: Error getting RMW implementation identifier / RMW implementation not installed
+(expected identifier of 'rmw_cyclonedx_cpp'), with error message 'failed to load shared library
 'librmw_cyclonedx_cpp.so' due to dlopen error: librmw_cyclonedx_cpp.so: cannot open shared object file'
 ```
 
 **解決方法**:
 ```bash
-# 1. コンテナとイメージをクリーンアップ
+# 1. Dockerコンテナのクリーンアップ
 cd ~/kachaka-api/tools/ros2_bridge
 sudo docker-compose down --remove-orphans
 sudo docker system prune -f
@@ -115,33 +308,101 @@ sudo docker system prune -f
 # 2. 正しいRMW実装を設定して起動
 export TAG=latest
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-sudo -E ./start_bridge.sh 192.168.118.95
-
-# 複数のKachakaロボットを使用する場合の例
-# Kachaka #1 (192.168.118.95)
-export TAG=latest
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export ROS_DOMAIN_ID=0
-sudo -E ./start_bridge.sh 192.168.118.95
+sudo -E ./start_bridge.sh <KACHAKA_IP>
 
-# Kachaka #2 (192.168.118.96) - 別のターミナルで
-export TAG=latest  
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-export ROS_DOMAIN_ID=1
-sudo -E ./start_bridge.sh 192.168.118.96 kachaka2
+# 例
+sudo -E ./start_bridge.sh 192.168.118.95
 ```
 
-**原因**: Dockerコンテナ内でデフォルトのRMW実装 (CycloneDDS) が利用できない場合、FastRTPSに切り替える必要があります。
+**原因**: Dockerコンテナ内でCycloneDDS RMW実装が利用できない場合、FastRTPSに切り替えが必要
 
-#### 方法2: ネイティブブリッジ
+#### 5. 「ロボットが反応しない」
+**症状**: パラメータ変更してもロボットの動作が変わらない
+
+**解決方法**:
 ```bash
-# ワークスペースから直接起動
-export FRAME_PREFIX="kachaka"
-export ROS_DOMAIN_ID=0
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-source ~/kachaka_ws/install/setup.bash
-ros2 launch kachaka_grpc_ros2_bridge grpc_ros2_bridge.launch.xml server_uri:="<KachakaのIPアドレス>:26400"
+# face_tracker_nodeの状態確認
+ros2 param get /face_tracker_node is_active
+
+# ミッションコントローラーの状態確認
+ros2 node info /mission_controller
+
+# 手動制御でテスト
+ros2 launch my_kachaka_apps teleop_keyboard.launch.py
 ```
+
+### RealSenseカメラの手動アクティベーション
+
+このワークスペースはLifecycleNode機能が有効のため、RealSenseカメラは手動アクティベーションが必要です：
+
+```bash
+# カメラノードの起動
+ros2 launch realsense2_camera rs_launch.py &
+
+# アクティベーション
+ros2 lifecycle set /camera/camera configure
+ros2 lifecycle set /camera/camera activate
+
+# 状態確認
+ros2 lifecycle get /camera/camera
+ros2 topic list | grep camera
+```
+
+### 環境変数の設定確認
+
+```bash
+# ROS2環境を設定
+export RMW_IMPLEMENTATION=rmw_cyclonedx_cpp  # ローカル用
+export ROS_DOMAIN_ID=0
+source ~/ws_kachaka/install/setup.bash
+
+# トピック・ノードの確認
+ros2 topic list
+ros2 node list
+```
+
+## 📁 重要ファイル
+
+- **`MISSION_SYSTEM_GUIDE.md`**: 詳細な使用説明書とトラブルシューティング
+- **`kachaka_map_manager.py`**: システム準備状況確認ツール  
+- **`start_mission_system.sh`**: 簡単起動スクリプト
+- **`test_mission_controller.py`**: ミッションコントローラーテストツール
+- **`test_is_active.py`**: 顔追従制御テストツール
+
+## 🎯 次のステップ
+
+### 初回セットアップ完了後
+1. **地図作成**: Kachakaアプリで環境の地図を作成
+2. **システム確認**: `python3 kachaka_map_manager.py <KACHAKA_IP>` でシステム準備状況を確認
+3. **統合テスト**: `./start_mission_system.sh <KACHAKA_IP>` で完全システム起動
+4. **動作確認**: カメラの前に立って状態遷移 (PATROLLING→APPROACHING→TRACKING) をテスト
+
+### システム性能の調整
+```bash
+# 検出感度の調整
+ros2 launch my_kachaka_apps mission_system.launch.py yolo_threshold:=0.3
+
+# 暗所対応
+ros2 param set /face_tracker_node enable_image_enhancement true
+ros2 param set /face_tracker_node gamma_correction 2.0
+
+# 追従動作の調整  
+ros2 param set /face_tracker_node turn_gain 0.002
+ros2 param set /face_tracker_node dead_zone_percent 20
+```
+
+## 📞 サポート
+
+システムに問題がある場合:
+1. **システム状態確認**: `kachaka_map_manager.py` でシステム状態をチェック
+2. **詳細ガイド参照**: `MISSION_SYSTEM_GUIDE.md` の詳細トラブルシューティングを確認  
+3. **個別テスト**: 各テストスクリプトで個別コンポーネントを検証
+4. **ログ確認**: `ros2 node info <ノード名>` でノード状態を確認
+
+---
+**🤖 Kachaka Mission System v1.0** - 完全自律話者追従システム  
+**実装完了**: PATROLLING → APPROACHING → TRACKING の状態遷移による自律的な人物発見・追従機能
 
 ### 環境設定の確認
 ```bash
