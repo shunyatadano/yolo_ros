@@ -17,7 +17,9 @@ Usage:
 Optional arguments:
     enable_camera:=true/false (default: false) - Start RealSense camera
     yolo_model:=<model_file> (default: yolov8m.pt) - YOLO model to use
-    waypoints:="x1,y1,x2,y2,..." (default: "1.0,1.0,-1.0,1.0,-1.0,-1.0,1.0,-1.0")
+    waypoints:="name1,name2,..." (default: "jin-san,charger,suenaga-san,base")
+
+Named waypoints: base, jin-san, charger, suenaga-san
 """
 
 from launch import LaunchDescription
@@ -53,8 +55,8 @@ def generate_launch_description():
     
     waypoints_arg = DeclareLaunchArgument(
         'waypoints',
-        default_value='1.0,1.0,-1.0,1.0,-1.0,-1.0,1.0,-1.0',
-        description='Patrol waypoints as comma-separated list: x1,y1,x2,y2,...'
+        default_value='jin-san,charger,suenaga-san,base',
+        description='Patrol waypoints as comma-separated list of waypoint names'
     )
     
     # Get launch configurations
@@ -126,7 +128,6 @@ def generate_launch_description():
         name='simple_patrol_node',
         output='screen',
         parameters=[{
-            'patrol_waypoints': waypoints,
             'patrol_speed': 0.3,
             'goal_tolerance': 0.5,
             'enable_person_detection_logging': True
@@ -195,7 +196,9 @@ def generate_launch_description():
                     'Control commands:\n'
                     '  ros2 param set /simple_patrol_node patrol_speed 0.2\n'
                     '  ros2 service call /simple_patrol_node/pause_patrol std_srvs/srv/Trigger\n'
-                    '  ros2 service call /simple_patrol_node/resume_patrol std_srvs/srv/Trigger\n'],
+                    '  ros2 service call /simple_patrol_node/resume_patrol std_srvs/srv/Trigger\n'
+                    '\n'
+                    'Named waypoints: base, jin-san, charger, suenaga-san\n'],
         output='screen'
     )
     
