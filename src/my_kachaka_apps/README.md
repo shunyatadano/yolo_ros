@@ -1,9 +1,10 @@
-# KachakaTalk Face Tracker & Person Following System
+# Kachaka Robot Applications & Audio-Visual System
 
-This package implements advanced face detection and person following functionality - a comprehensive tracking system that detects faces from RealSense camera input, measures distance using depth data, and controls the Kachaka robot to follow the person while maintaining a specified distance.
+This package implements advanced face detection, person following, and audio source mapping functionality for the Kachaka robot. It provides a comprehensive suite of applications including visual tracking, audio localization, and spatial awareness capabilities.
 
 ## Features
 
+### 🎥 Visual Tracking System
 - **Advanced Face Detection**: Uses MediaPipe for high-precision human face detection
 - **Distance Control**: Uses RealSense depth camera to measure and maintain target distance
 - **Visual Display**: Shows camera feed with MediaPipe detection results via cv2.imshow
@@ -12,57 +13,192 @@ This package implements advanced face detection and person following functionali
 - **Real-time Output**: Live display of face position, distance, and calculated velocities
 - **Adaptive Control**: Speed adjustment based on distance error magnitude
 - **Safety Features**: Dead zone logic and automatic stop when person is lost
+
+### 🎵 Audio Source Mapping System *(NEW)*
+- **3D Audio Localization**: Real-time sound source detection and positioning using ReSpeaker 4 Mic Array
+- **ODAS Integration**: Complete ODAS (Open embeddeD Audition System) integration for professional audio processing
+- **Spatial Visualization**: 3D audio sources displayed in RViz with color-coded energy levels
+- **Multi-Source Tracking**: Simultaneous tracking of multiple audio sources (SSL & SST)
+- **RViz Integration**: Seamless integration with Kachaka robot visualization
+- **Configurable Range**: Adjustable audio source detection range (default 3m)
+- **Real-time Updates**: 120Hz audio processing with live visualization
+
+### 🔧 System Integration
 - **Teleop Integration**: Keyboard and joystick control options
 - **ROS2 Integration**: Fully integrated with ROS2 ecosystem
-- **Test Image Saving**: Automatically saves detection results to `/tmp/face_detection_test_*.jpg` for debugging
+- **Modular Design**: Independent launch files for different system combinations
+- **Test Framework**: Comprehensive testing and debugging tools
 
 ## Architecture
 
+### Visual Tracking System
 ```
 [RealSense Camera] --+-- /camera/color/image_raw -----> [Face Tracker Node] --/kachaka/manual_control/cmd_vel--> [Kachaka Robot]
                      |
                      +-- /camera/depth/image_rect_raw --> [Distance Control]
 ```
 
+### Audio Source Mapping System *(NEW)*
+```
+[ReSpeaker 4 Mic Array] --> [ODAS Core] --+-- /sst (Sound Source Tracking) -----> [Audio Source Visualizer] --> /audio_sources/markers --> [RViz]
+                                          |                                                    |
+                                          +-- /ssl (Sound Source Localization) ---------------+
+```
+
+### Complete Integrated System
+```
+[Kachaka Robot] <------ Control Commands ------- [Mission Controller]
+     |                                                    ^
+     v                                                    |
+[Robot State] --> [RViz Visualization] <-- [Audio Sources] + [Face Detection] + [Camera Feed]
+                           ^                        ^              ^                  ^
+                           |                        |              |                  |
+                  [Audio Visualizer] <-- [ODAS] <--+     [Face Tracker] <--+    [RealSense]
+                                             |                              |
+                                    [ReSpeaker Array]            [RGB-D Camera]
+```
+
 ## Requirements
 
 ### Hardware
-- Kachaka robot (Preferred Robotics)
-- Intel RealSense D435 (or compatible RGB-D camera)
-- Control PC with ROS2 Humble
+- **Kachaka robot** (Preferred Robotics)
+- **Intel RealSense D435** (or compatible RGB-D camera) - *for visual tracking*
+- **ReSpeaker 4 Mic Array** (SEEED Studio) - *for audio source mapping*
+- **Control PC** with ROS2 Humble (Ubuntu 22.04 recommended)
 
 ### Software Dependencies
-- ROS2 Humble Hawksbill
-- Python packages:
-  - `python3-opencv`
-  - `cv_bridge`
-  - `rclpy`
-  - `sensor_msgs`
-  - `geometry_msgs`
-  - `mediapipe`
-  - `numpy`
-- Additional packages:
-  - `teleop_twist_keyboard` (for manual control)
-  - `teleop_twist_joy` and `joy` (for joystick control)
+
+#### Core System
+- **ROS2 Humble Hawksbill**
+- **Python 3.10+** 
+
+#### Visual Tracking Dependencies
+- `python3-opencv`
+- `cv_bridge`
+- `mediapipe`
+- `numpy`
+- `ros-humble-realsense2-camera` (for RealSense support)
+
+#### Audio Source Mapping Dependencies *(NEW)*
+- **System packages**:
+  - `cmake`, `gcc`, `build-essential`
+  - `libfftw3-dev`, `libconfig-dev`
+  - `libasound2-dev`, `libpulse-dev`
+  - `libgfortran-*-dev`, `perl`
+  - `gfortran`, `texinfo`
+- **Python packages**:
+  - `libconf`
+  - `tf2-geometry-msgs` 
+
+#### ROS2 Packages
+- `rclpy`, `sensor_msgs`, `geometry_msgs`
+- `visualization_msgs`, `tf2_ros`
+- `teleop_twist_keyboard` (for manual control)
+- `teleop_twist_joy` and `joy` (for joystick control)
 
 ## Installation
 
-1. Make sure you have the Kachaka workspace set up as per the main README.md
-2. Install RealSense ROS2 package (required for camera input):
+### Quick Setup (Visual Tracking Only)
+1. **Install RealSense support**:
    ```bash
    sudo apt install ros-humble-realsense2-camera
    ```
-3. Build the package:
+
+2. **Build the package**:
    ```bash
-   cd ~/kachaka_ws
+   cd ~/ws_kachaka  # or your workspace directory
    source /opt/ros/humble/setup.bash
    colcon build --packages-select my_kachaka_apps
    source install/setup.bash
    ```
 
+### Complete Setup (Audio + Visual System)
+
+1. **Install system dependencies for ODAS**:
+   ```bash
+   sudo apt update
+   sudo apt install -y cmake gcc build-essential \
+                       libfftw3-dev libconfig-dev \
+                       libasound2-dev libpulse-dev \
+                       libgfortran-*-dev perl \
+                       gfortran texinfo
+   sudo pip install libconf
+   ```
+
+2. **Install RealSense support**:
+   ```bash
+   sudo apt install ros-humble-realsense2-camera
+   ```
+
+3. **Build the complete system**:
+   ```bash
+   cd ~/ws_kachaka  # or your workspace directory
+   source /opt/ros/humble/setup.bash
+   
+   # Build all packages including audio dependencies
+   colcon build --packages-select audio_utils odas_ros odas_ros_msgs my_kachaka_apps
+   source install/setup.bash
+   ```
+
+4. **Verify ReSpeaker 4 Mic Array connection**:
+   ```bash
+   # Check if ReSpeaker is detected
+   lsusb | grep -i seeed
+   
+   # Check PulseAudio sources
+   pacmd list-sources | grep -A 5 "ReSpeaker"
+   ```
+
 ## Usage
 
-### Method 1: Complete System Launch (Recommended)
+### 🎵 Audio Source Mapping *(NEW)*
+
+#### Method A: Complete Audio-Visual System
+Launch the integrated system with both visual tracking and audio source mapping:
+
+```bash
+# Set environment variables
+export RMW_IMPLEMENTATION=rmw_cyclonedx_cpp
+export ROS_DOMAIN_ID=0
+export FRAME_PREFIX="kachaka"
+source ~/ws_kachaka/install/setup.bash
+
+# Launch complete system with RViz
+ros2 launch my_kachaka_apps kachaka_audio_mapping.launch.py ip_address:=<KACHAKA_IP>
+```
+
+#### Method B: Audio Mapping Only
+For audio source mapping without face tracking:
+
+```bash
+# Terminal 1: Start ODAS
+source install/setup.bash
+ros2 launch odas_ros odas.launch.xml
+
+# Terminal 2: Start audio visualizer
+source install/setup.bash
+python3 src/my_kachaka_apps/my_kachaka_apps/audio_source_visualizer.py
+
+# Terminal 3: Launch RViz with audio visualization
+rviz2 -d src/my_kachaka_apps/rviz/kachaka_with_audio.rviz
+```
+
+#### Expected Audio Behavior
+- **Blue spheres**: Potential audio sources (SSL - Sound Source Localization)
+- **Green/Yellow spheres**: Tracked audio sources (SST - Sound Source Tracking) 
+- **Text labels**: Show source ID, energy levels, and activity
+- **Real-time updates**: ~120Hz processing rate
+- **3D positioning**: Audio sources positioned around robot within 3m range
+
+#### Quick Audio Test
+```bash
+# Test audio visualization without robot
+python3 src/my_kachaka_apps/scripts/test_audio_visualization.py
+```
+
+### 🎥 Visual Tracking System
+
+#### Method 1: Complete System Launch (Recommended)
 
 **Prerequisites:** Install RealSense package first:
 ```bash
