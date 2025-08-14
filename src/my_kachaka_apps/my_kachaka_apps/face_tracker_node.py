@@ -45,7 +45,7 @@ class FaceTrackerNode(Node):
         
         # Check if OpenCV is available
         if not OPENCV_AVAILABLE:
-            self.get_logger().error('OpenCV or cv_bridge is not available. Please install python3-opencv and cv_bridge.')
+            self.logger.error('OpenCV or cv_bridge is not available. Please install python3-opencv and cv_bridge.')
             return
         
         # Parameters with descriptions for Task 2-B tuning
@@ -69,16 +69,16 @@ class FaceTrackerNode(Node):
         
         self.declare_parameter('turn_gain', 0.003, turn_gain_desc)
         self.declare_parameter('dead_zone_percent', 15, dead_zone_desc)
-        self.declare_parameter('clahe_clip_limit', 8.0, clahe_clip_desc)
-        self.declare_parameter('clahe_grid_size', 6, clahe_grid_desc)
+        self.declare_parameter('clahe_clip_limit', 0.7, clahe_clip_desc) # higher value = more contrast
+        self.declare_parameter('clahe_grid_size', 4, clahe_grid_desc) # higher value = more local adaptation
         self.declare_parameter('gamma_correction', 1.5, gamma_desc)
         self.declare_parameter('enable_bilateral_filter', True, enable_bilateral_desc)
         self.declare_parameter('enable_image_enhancement', False, enable_enhancement_desc)
         
         # New distance control parameters
-        self.declare_parameter('target_distance', 0.5, target_distance_desc)
-        self.declare_parameter('linear_gain', 0.8, linear_gain_desc)
-        self.declare_parameter('distance_dead_zone', 0.1, distance_dead_zone_desc)
+        self.declare_parameter('target_distance', 0.8, target_distance_desc)  # Closer target distance
+        self.declare_parameter('linear_gain', 0.8, linear_gain_desc)          # Higher gain for faster response
+        self.declare_parameter('distance_dead_zone', 0.1, distance_dead_zone_desc)  # Smaller dead zone
         
         # Activity control parameter
         self.declare_parameter('is_active', True, is_active_desc)
@@ -110,7 +110,12 @@ class FaceTrackerNode(Node):
         # Initialize MediaPipe face detection
         self.mp_face_detection = mp.solutions.face_detection
         self.mp_drawing = mp.solutions.drawing_utils
-        self.face_detection = self.mp_face_detection.FaceDetection(min_detection_confidence=0.5)
+        # Use full-range model (model_selection=1) as in face_detection_prototype.py
+        # This provides better detection capability compared to the short-range model
+        self.face_detection = self.mp_face_detection.FaceDetection(
+            model_selection=1,  # Use full-range model for better detection
+            min_detection_confidence=0.5
+        )
         
         # QoS profile for sensor data - must match publisher (RELIABLE)
         sensor_qos = QoSProfile(
@@ -132,11 +137,12 @@ class FaceTrackerNode(Node):
             sensor_qos
         )
         
-        # Depth image subscriber for distance measurement
+        # Aligned depth image subscriber for distance measurement
+        # Use aligned depth which is registered to color camera coordinates
         self.depth_subscriber = self.create_subscription(
             Image,
-            '/camera/camera/depth/image_rect_raw',
-            self.depth_callback,
+            '/camera/camera/aligned_depth_to_color/image_raw',
+            self.aligned_depth_callback,
             sensor_qos
         )
         
@@ -148,7 +154,7 @@ class FaceTrackerNode(Node):
         self.face_detected = False
         self.face_center_x = 0
         self.face_center_y = 0
-        self.image_width = 640  # Default width, will be updated from image
+        self.image_width = 1280  # 640: Default width, will be updated from image
         self.frame_count = 0
         
         # Distance measurement variables
@@ -161,17 +167,33 @@ class FaceTrackerNode(Node):
         # OpenCV window will be created when first image is received
         self.window_created = False
         
-        self.get_logger().info(f'Face tracker initialized with turn_gain={self.turn_gain}, dead_zone_percent={self.dead_zone_percent}%')
-        self.get_logger().info(f'Distance control: target={self.target_distance:.2f}m, linear_gain={self.linear_gain:.3f}, dead_zone={self.distance_dead_zone:.2f}m')
-        self.get_logger().info(f'Activity control: is_active={self.is_active}')
-        self.get_logger().info('OpenCV window created and waiting for camera data...')
-        self.get_logger().info('Task 2-A: Publishing control commands to /kachaka/manual_control/cmd_vel topic')
-        self.get_logger().info('Task 2-B: Dynamic parameter tuning enabled - use ros2 param set to adjust gain values')
-        self.get_logger().info('Subscribed to: /camera/camera/color/image_raw')
-        self.get_logger().info('Step 1: Adding depth measurement capability (console output only)')
-        self.get_logger().info('Step 2: Forward/backward control logic with console output (linear.x not published yet)')
-        self.get_logger().info('Step 3: ENABLED - Publishing both linear.x and angular.z to robot for full person tracking')
+        self.logger = self.get_logger()
+
+        self.logger.info(f'Face tracker initialized with turn_gain={self.turn_gain}, dead_zone_percent={self.dead_zone_percent}%')
+        self.logger.info(f'Distance control: target={self.target_distance:.2f}m, linear_gain={self.linear_gain:.3f}, dead_zone={self.distance_dead_zone:.2f}m')
+        self.logger.info(f'Activity control: is_active={self.is_active}')
+        self.logger.info('OpenCV window created and waiting for camera data...')
+        self.logger.info('Task 2-A: Publishing control commands to /kachaka/manual_control/cmd_vel topic')
+        self.logger.info('Task 2-B: Dynamic parameter tuning enabled - use ros2 param set to adjust gain values')
+        self.logger.info('Subscribed to: /camera/camera/color/image_raw')
+        self.logger.info('Using aligned depth-to-color for accurate depth measurement')
+        self.logger.info('Robust depth sampling: 3x3 grid centered on face with median filtering')
+        self.logger.info('Publishing both linear.x and angular.z to robot for full person tracking')
     
+    LOG_TEMPLATE = {
+        'turn_gain': 'Task 2-B: Updated turn_gain from {old:.6f} to {new:.6f}',
+        'dead_zone_percent': 'Task 2-B: Updated dead_zone_percent from {old}% to {new}%',
+        'clahe_clip_limit': 'Updated CLAHE clip limit from {old:.1f} to {new:.1f}',
+        'clahe_grid_size': 'Updated CLAHE grid size from {old} to {new}',
+        'gamma_correction': 'Updated gamma correction from {old:.2f} to {new:.2f}',
+        'enable_bilateral_filter': 'Updated bilateral filter from {old} to {new}',
+        'enable_image_enhancement': 'Updated image enhancement from {old} to {new}',
+        'target_distance': 'Updated target distance from {old:.2f}m to {new:.2f}m',
+        'linear_gain': 'Updated linear gain from {old:.3f} to {new:.3f}',
+        'distance_dead_zone': 'Updated distance dead zone from {old:.2f}m to {new:.2f}m',
+        'is_active': 'Face tracking activity changed from {old} to {new}',
+    }
+
     def destroy_node(self):
         """Clean up resources when node is destroyed."""
         if OPENCV_AVAILABLE:
@@ -182,51 +204,21 @@ class FaceTrackerNode(Node):
         """Handle dynamic parameter updates for Task 2-B tuning."""
         from rcl_interfaces.msg import SetParametersResult
         
+        # Check if parameters are valid
         for param in params:
-            if param.name == 'turn_gain':
-                old_gain = self.turn_gain
-                self.turn_gain = param.value
-                self.get_logger().info(f'Task 2-B: Updated turn_gain from {old_gain:.6f} to {self.turn_gain:.6f}')
-            elif param.name == 'dead_zone_percent':
-                old_zone = self.dead_zone_percent
-                self.dead_zone_percent = param.value
-                self.get_logger().info(f'Task 2-B: Updated dead_zone_percent from {old_zone}% to {self.dead_zone_percent}%')
-            elif param.name == 'clahe_clip_limit':
-                old_val = self.clahe_clip_limit
-                self.clahe_clip_limit = param.value
-                self.get_logger().info(f'Updated CLAHE clip limit from {old_val:.1f} to {self.clahe_clip_limit:.1f}')
-            elif param.name == 'clahe_grid_size':
-                old_val = self.clahe_grid_size
-                self.clahe_grid_size = param.value
-                self.get_logger().info(f'Updated CLAHE grid size from {old_val} to {self.clahe_grid_size}')
-            elif param.name == 'gamma_correction':
-                old_val = self.gamma_correction
-                self.gamma_correction = param.value
-                self.get_logger().info(f'Updated gamma correction from {old_val:.2f} to {self.gamma_correction:.2f}')
-            elif param.name == 'enable_bilateral_filter':
-                old_val = self.enable_bilateral_filter
-                self.enable_bilateral_filter = param.value
-                self.get_logger().info(f'Updated bilateral filter from {old_val} to {self.enable_bilateral_filter}')
-            elif param.name == 'enable_image_enhancement':
-                old_val = self.enable_image_enhancement
-                self.enable_image_enhancement = param.value
-                self.get_logger().info(f'Updated image enhancement from {old_val} to {self.enable_image_enhancement}')
-            elif param.name == 'target_distance':
-                old_val = self.target_distance
-                self.target_distance = param.value
-                self.get_logger().info(f'Updated target distance from {old_val:.2f}m to {self.target_distance:.2f}m')
-            elif param.name == 'linear_gain':
-                old_val = self.linear_gain
-                self.linear_gain = param.value
-                self.get_logger().info(f'Updated linear gain from {old_val:.3f} to {self.linear_gain:.3f}')
-            elif param.name == 'distance_dead_zone':
-                old_val = self.distance_dead_zone
-                self.distance_dead_zone = param.value
-                self.get_logger().info(f'Updated distance dead zone from {old_val:.2f}m to {self.distance_dead_zone:.2f}m')
-            elif param.name == 'is_active':
-                old_val = self.is_active
-                self.is_active = param.value
-                self.get_logger().info(f'Face tracking activity changed from {old_val} to {self.is_active}')
+            param_name = param.name
+
+            if hasattr(self, param_name):
+                old_val = getattr(self, param_name)
+                new_val = param.value
+                setattr(self, param_name, new_val)
+
+                # generate log message based on parameter name
+                template = self.LOG_TEMPLATE.get(param_name, 'Updated {name} from {old} to {new}')
+                if template:
+                    self.logger.info(template.format(name=param_name, old=old_val, new=new_val))
+                else:
+                    self.logger.info(f'Updated {param_name} from {old_val} to {new_val}')
         
         return SetParametersResult(successful=True)
 
@@ -242,7 +234,7 @@ class FaceTrackerNode(Node):
         
         # Debug: Log that callback was called
         if self.frame_count == 0:
-            self.get_logger().info('First image callback received!')
+            self.logger.info('First image callback received!')
             
         try:
             # Convert ROS image to OpenCV format
@@ -312,13 +304,13 @@ class FaceTrackerNode(Node):
                     self.face_center_y = y + height // 2
                     self.face_detected = True
                     
-                    self.get_logger().debug(f'Face detected at x={self.face_center_x}, image_width={self.image_width}')
+                    self.logger.debug(f'Face detected at x={self.face_center_x}, image_width={self.image_width}')
                 else:
                     self.face_detected = False
-                    self.get_logger().debug('No face detected')
+                    self.logger.debug('No face detected')
             else:
                 self.face_detected = False
-                self.get_logger().debug('No face detected')
+                self.logger.debug('No face detected')
             
             # Display the image with face detection results
             try:
@@ -326,7 +318,7 @@ class FaceTrackerNode(Node):
                 if not self.window_created:
                     cv2.namedWindow('Face Detection', cv2.WINDOW_AUTOSIZE)
                     self.window_created = True
-                    self.get_logger().info('OpenCV window created successfully')
+                    self.logger.info('OpenCV window created successfully')
                 
                 cv2.imshow('Face Detection', display_image)
                 cv2.waitKey(1)  # Allow OpenCV to process GUI events
@@ -336,29 +328,29 @@ class FaceTrackerNode(Node):
                 if self.frame_count % 30 == 0:
                     filename = f"/tmp/face_detection_test_{self.frame_count}.jpg"
                     cv2.imwrite(filename, display_image)
-                    self.get_logger().info(f'Saved test image: {filename}')
+                    self.logger.info(f'Saved test image: {filename}')
                     
             except Exception as e:
-                self.get_logger().error(f'Error displaying image: {str(e)}')
+                self.logger.error(f'Error displaying image: {str(e)}')
                 
         except Exception as e:
-            self.get_logger().error(f'Error processing image: {str(e)}')
+            self.logger.error(f'Error processing image: {str(e)}')
             self.face_detected = False
 
     def debug_depth_status(self):
         """Debug callback to check depth camera status."""
-        self.get_logger().info(f'Depth status: callbacks received={self.depth_callback_count}, valid_measurement={self.distance_measurement_valid}')
+        self.logger.info(f'Depth status: callbacks received={self.depth_callback_count}, valid_measurement={self.distance_measurement_valid}')
         if self.depth_callback_count == 0:
-            self.get_logger().warn('No depth callbacks received - check if depth camera is publishing')
+            self.logger.warn('No aligned depth callbacks received - check if aligned depth camera is publishing')
 
-    def depth_callback(self, msg):
-        """Process depth image for distance measurement."""
+    def aligned_depth_callback(self, msg):
+        """Process aligned depth image for distance measurement."""
         if not OPENCV_AVAILABLE:
             return
         
         self.depth_callback_count += 1
         if self.depth_callback_count == 1:
-            self.get_logger().info('First depth callback received!')
+            self.logger.info('First aligned depth callback received!')
             
         try:
             # Store the latest depth image for distance calculation
@@ -371,26 +363,22 @@ class FaceTrackerNode(Node):
                     self.current_distance = distance
                     self.distance_measurement_valid = True
                     # Step 1: Console output only - print distance
-                    self.get_logger().info(f'Distance to face: {distance:.3f}m at position ({self.face_center_x}, {self.face_center_y})')
+                    self.logger.info(f'Distance to face: {distance:.3f}m at position ({self.face_center_x}, {self.face_center_y})')
                 else:
                     self.distance_measurement_valid = False
-                    self.get_logger().debug('Distance measurement failed - invalid depth data')
+                    self.logger.debug('Distance measurement failed - invalid depth data')
             else:
                 self.distance_measurement_valid = False
                 
         except Exception as e:
-            self.get_logger().error(f'Error processing depth image: {str(e)}')
+            self.logger.error(f'Error processing depth image: {str(e)}')
             self.distance_measurement_valid = False
 
     def calculate_distance_to_face(self):
-        """Calculate distance to detected face using depth image.
+        """Calculate distance to detected face using robust sampling of aligned depth image.
         
-        Implements algorithm from specification section 5.5.1:
-        1. Get face center coordinates (already available in face_center_x, face_center_y)
-        2. Extract 5x5 pixel region around face center from depth image  
-        3. Remove invalid values (0 or NaN)
-        4. Calculate median of valid depth values
-        5. Convert to meters if needed
+        Uses aligned depth image which is already registered to color camera coordinates.
+        Implements robust multi-point sampling centered around face for better accuracy.
         
         Returns:
             float: Distance in meters, or None if calculation failed
@@ -402,41 +390,55 @@ class FaceTrackerNode(Node):
             h, w = self.latest_depth_image.shape[:2]
             cx, cy = self.face_center_x, self.face_center_y
             
-            # Ensure face center is within image bounds for 5x5 region
-            if cx < 2 or cy < 2 or cx >= w-2 or cy >= h-2:
-                self.get_logger().debug(f'Face center ({cx}, {cy}) too close to image edge for 5x5 sampling')
+            # Ensure face center is within reasonable bounds
+            if cx < 10 or cy < 10 or cx >= w-10 or cy >= h-10:
+                self.logger.debug(f'Face center ({cx}, {cy}) too close to image edge for robust sampling')
                 return None
             
-            # Extract 5x5 region around face center
-            region = self.latest_depth_image[cy-2:cy+3, cx-2:cx+3]
+            # Get robust depth measurement using multiple sampling points
+            # centered around face for better accuracy
+            depths = []
             
-            # Remove invalid values (0, NaN, or extremely large values)
-            valid_depths = []
-            for row in region:
-                for pixel_depth in row:
-                    if pixel_depth > 0 and not np.isnan(pixel_depth) and pixel_depth < 10000:  # Reasonable max distance
-                        valid_depths.append(pixel_depth)
+            # Create a face region estimate based on typical face proportions
+            # Assume face width/height is roughly 15% of image width for sampling area
+            face_region_size = max(int(0.15 * min(w, h)), 30)  # At least 30 pixels
             
-            if len(valid_depths) < 3:  # Need at least 3 valid points for reliable median
-                self.get_logger().debug(f'Insufficient valid depth points: {len(valid_depths)}/25')
+            # Define sampling offsets relative to face region size (15% from center)
+            offset_ratios = [-0.15, 0.0, 0.15]  # 3x3 grid centered on face
+            
+            for dx_ratio in offset_ratios:
+                for dy_ratio in offset_ratios:
+                    # Calculate absolute pixel positions
+                    px = int(cx + dx_ratio * face_region_size)
+                    py = int(cy + dy_ratio * face_region_size)
+                    
+                    # Ensure we're within image bounds
+                    if 0 <= px < w and 0 <= py < h:
+                        # Get depth value (aligned depth is typically in mm)
+                        depth_value = self.latest_depth_image[py, px]
+                        
+                        # Convert to meters and validate
+                        if self.latest_depth_image.dtype == np.uint16:
+                            depth_m = depth_value / 1000.0  # Convert mm to meters
+                        else:
+                            depth_m = float(depth_value)
+                        
+                        # Filter out invalid depth readings
+                        if 0.1 < depth_m < 10.0 and not np.isnan(depth_m):
+                            depths.append(depth_m)
+            
+            if len(depths) < 3:  # Need at least 3 valid points for reliable median
+                self.logger.debug(f'Insufficient valid depth points: {len(depths)}/9 in robust sampling')
                 return None
             
-            # Calculate median depth
-            median_depth = np.median(valid_depths)
+            # Use median to reduce noise from outliers
+            median_depth = np.median(depths)
             
-            # Convert to meters based on encoding
-            # Check if depth is in mm (16UC1) or m (32FC1)
-            if self.latest_depth_image.dtype == np.uint16:
-                # Depth in mm, convert to meters
-                distance_meters = median_depth / 1000.0
-            else:
-                # Already in meters (32FC1)
-                distance_meters = float(median_depth)
-            
-            return distance_meters
+            self.logger.debug(f'Robust depth measurement: {len(depths)} valid points, median: {median_depth:.3f}m')
+            return median_depth
             
         except Exception as e:
-            self.get_logger().error(f'Error calculating distance: {str(e)}')
+            self.logger.error(f'Error calculating robust distance: {str(e)}')
             return None
 
     def publish_cmd_vel(self):
@@ -462,8 +464,8 @@ class FaceTrackerNode(Node):
             image_center_x = self.image_width // 2
             
             # 3. Calculate error (face center - image center)
-            error_x = - (self.face_center_x - image_center_x) # for front camera
-            # error_x = self.face_center_x - image_center_x # for back camera
+            # error_x = - (self.face_center_x - image_center_x) # for front camera
+            error_x = self.face_center_x - image_center_x # for back camera
             
             # 4. Apply dead zone logic (Task 2-B improvement)
             dead_zone_pixels = (self.dead_zone_percent / 100.0) * self.image_width / 2
@@ -493,7 +495,8 @@ class FaceTrackerNode(Node):
                 else:
                     # Outside dead zone - apply P-control for forward/backward movement
                     # Note: negative sign so robot moves forward when distance is too large
-                    base_velocity = -self.linear_gain * error_dist
+                    # base_velocity = self.linear_gain * error_dist # if error_dist < 0: base_velocity < 0
+                    base_velocity = -self.linear_gain * error_dist # if error_dist < 0: base_velocity > 0 
                     
                     # Apply more aggressive control for larger distance errors
                     if abs(error_dist) > 1.0:  # Very far (>1m error)

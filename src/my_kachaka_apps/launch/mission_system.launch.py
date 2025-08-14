@@ -34,7 +34,7 @@ def generate_launch_description():
     # Launch arguments
     enable_camera_arg = DeclareLaunchArgument(
         'enable_camera',
-        default_value='true',
+        default_value='true',  # Keep RealSense enabled for TRACKING state
         description='Enable RealSense camera launch'
     )
     
@@ -42,6 +42,12 @@ def generate_launch_description():
         'enable_nav2', 
         default_value='false',
         description='Enable Nav2 navigation launch'
+    )
+    
+    use_kachaka_camera_arg = DeclareLaunchArgument(
+        'use_kachaka_camera',
+        default_value='true',
+        description='Use Kachaka built-in camera instead of RealSense'
     )
     
     yolo_model_arg = DeclareLaunchArgument(
@@ -65,6 +71,7 @@ def generate_launch_description():
     # Get launch configurations
     enable_camera = LaunchConfiguration('enable_camera')
     enable_nav2 = LaunchConfiguration('enable_nav2')
+    use_kachaka_camera = LaunchConfiguration('use_kachaka_camera')
     yolo_model = LaunchConfiguration('yolo_model')
     yolo_threshold = LaunchConfiguration('yolo_threshold')
     waypoints = LaunchConfiguration('waypoints')
@@ -81,29 +88,31 @@ def generate_launch_description():
         condition=IfCondition(enable_camera),
         launch_arguments={
             'enable_color': 'true',
-            'enable_depth': 'true',
+            'enable_depth': 'true',  # Keep depth enabled for distance measurement
             'enable_infra': 'false',
             'enable_fisheye': 'false',
+            'align_depth.enable': 'true',  # Keep alignment for face tracking
             'color_width': '640',
             'color_height': '480',
-            'color_fps': '15',
+            'color_fps': '5',  # Further reduce FPS to decrease CPU load and navigation interference
             'depth_width': '640', 
             'depth_height': '480',
-            'depth_fps': '15',
+            'depth_fps': '5',  # Match color FPS for stability
         }.items()
     )
     
-    # 2. Camera activation commands (for LifecycleNode)
+    # Camera activation commands (for LifecycleNode)
+    # Add delay to ensure camera is ready before activation
     camera_configure_cmd = ExecuteProcess(
         condition=IfCondition(enable_camera),
-        cmd=['ros2', 'lifecycle', 'set', '/camera/camera', 'configure'],
+        cmd=['bash', '-c', 'sleep 2 && ros2 lifecycle set /camera/camera configure'],
         output='screen',
         shell=False
     )
     
     camera_activate_cmd = ExecuteProcess(
         condition=IfCondition(enable_camera),
-        cmd=['ros2', 'lifecycle', 'set', '/camera/camera', 'activate'],
+        cmd=['bash', '-c', 'sleep 1 && ros2 lifecycle set /camera/camera activate'],
         output='screen',
         shell=False
     )
@@ -120,8 +129,10 @@ def generate_launch_description():
         launch_arguments={
             'model': yolo_model,
             'threshold': yolo_threshold,
-            'input_image_topic': '/camera/camera/color/image_raw',
-            'device': 'cpu',  # Change to 'cuda:0' if GPU available
+            'input_image_topic': '/kachaka/front_camera/image_raw',  # Use Kachaka camera for PATROLLING
+            'device': 'cpu',  # CPU processing to avoid GPU conflicts
+            'publish_viz': 'false',  # Disable visualization to reduce CPU
+            'detection_rate': '2.0',  # Limit detection rate to reduce processing load
             'namespace': 'yolo'
         }.items()
     )
@@ -135,26 +146,28 @@ def generate_launch_description():
         parameters=[{
             'turn_gain': 0.003,
             'dead_zone_percent': 15,
-            'target_distance': 0.5,
-            'linear_gain': 0.8,
+            'target_distance': 0.9,
+            'linear_gain': 0.4,
             'distance_dead_zone': 0.1,
-            'enable_image_enhancement': False,
-            'is_active': True  # Will be controlled by mission_controller
+            'enable_image_enhancement': True,  # Keep enabled for robustness
+            'is_active': True,  # Will be controlled by mission_controller
+            'detection_confidence': 0.7,  # Higher threshold for more stable detection
+            'max_face_detection_rate': 2.0  # Further limit face detection to 2 Hz to reduce CPU load
         }]
     )
     
-    # 5. Mission controller node  
-    mission_controller_node = Node(
-        package='my_kachaka_apps',
-        executable='mission_controller', 
-        name='mission_controller',
-        output='screen',
-        parameters=[{
-            'approach_distance_threshold': 1.5,
-            'patrol_waypoints': [1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0],
-            'person_lost_timeout': 5.0
-        }]
-    )
+    # # 5. Mission controller node  
+    # mission_controller_node = Node(
+    #     package='my_kachaka_apps',
+    #     executable='mission_controller', 
+    #     name='mission_controller',
+    #     output='screen',
+    #     parameters=[{
+    #         'approach_distance_threshold': 1.5,
+    #         'patrol_waypoints': [1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0],
+    #         'person_lost_timeout': 5.0
+    #     }]
+    # )
     
     # 6. Simple patrol node for waypoint navigation (PATROLLING state)
     patrol_node = Node(
@@ -163,8 +176,8 @@ def generate_launch_description():
         name='simple_patrol_node',
         output='screen',
         parameters=[{
-            'patrol_speed': 0.3,
-            'goal_tolerance': 0.5,
+            'patrol_speed': 0.2,  # Reduce patrol speed for more stable navigation
+            'goal_tolerance': 0.3,  # Tighter tolerance for better positioning
             'enable_person_detection_logging': True
         }]
     )
@@ -202,7 +215,7 @@ def generate_launch_description():
                     '- Mission Controller: /mission_controller\n'
                     '- Simple Patrol: /simple_patrol_node (PATROLLING state)\n'
                     '- Person Visualizer: /person_detection_visualizer\n'
-                    '- Camera: /camera/camera (if enabled)\n'
+                    '- Cameras: Kachaka front (PATROLLING) + RealSense (TRACKING)\n'
                     '- Nav2: navigation stack\n'
                     '\n'
                     'State Machine: PATROLLING → APPROACHING → TRACKING\n'
@@ -250,21 +263,11 @@ def generate_launch_description():
         # Face tracking
         face_tracker_node,
         
-        # Mission coordination
-        mission_controller_node,
+        # # Mission coordination
+        # mission_controller_node,
         
-        # Camera activation (with delay)
-        ExecuteProcess(
-            condition=IfCondition(enable_camera),
-            cmd=['sleep', '3'],  # Wait for camera to initialize
-            output='screen'
-        ),
+        # Camera activation (sequential with proper delays)
         camera_configure_cmd,
-        ExecuteProcess(
-            condition=IfCondition(enable_camera),
-            cmd=['sleep', '1'],
-            output='screen'
-        ),
         camera_activate_cmd,
         
         # Info message

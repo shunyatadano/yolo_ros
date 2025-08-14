@@ -73,8 +73,8 @@ class SimplePatrolNode(Node):
             Trigger, 'resume_patrol', self.resume_patrol_callback
         )
         
-        # Timer for patrol logic
-        self.patrol_timer = self.create_timer(2.0, self.patrol_timer_callback)
+        # Timer for patrol logic - reduced frequency to avoid navigation interference
+        self.patrol_timer = self.create_timer(3.0, self.patrol_timer_callback)
         
         # Initialize navigator
         self.init_navigator()
@@ -133,7 +133,7 @@ class SimplePatrolNode(Node):
         if not self.is_patrolling or self.navigator is None:
             return
         
-        # Check if we've reached the current goal
+        # Check if we've reached the current goal - add stability check
         if not self.navigator.isTaskComplete():
             return  # Still navigating to current waypoint
         
@@ -147,15 +147,15 @@ class SimplePatrolNode(Node):
             )
             # Move to next waypoint
             self.current_waypoint_index = (self.current_waypoint_index + 1) % len(self.waypoint_list)
-            time.sleep(1.0)  # Brief pause at waypoint
-            self.start_next_waypoint()
+            # Brief pause at waypoint to allow for stable positioning
+            self.create_timer(2.0, lambda: self.start_next_waypoint() if self.is_patrolling else None)
         elif result == TaskResult.FAILED:
             current_waypoint_name = self.waypoint_list[self.current_waypoint_index]
             self.get_logger().warn(
                 f'Failed to reach {current_waypoint_name}, retrying in 5 seconds...'
             )
-            # Retry the same waypoint after a delay
-            self.create_timer(5.0, lambda: self.start_next_waypoint())
+            # Retry the same waypoint after a longer delay to avoid rapid retries
+            self.create_timer(8.0, lambda: self.start_next_waypoint() if self.is_patrolling else None)
         elif result == TaskResult.CANCELED:
             self.get_logger().info('Navigation was canceled')
     

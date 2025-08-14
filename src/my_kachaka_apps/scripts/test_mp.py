@@ -11,6 +11,61 @@ import numpy as np
 mp_face_detection = mp.solutions.face_detection
 mp_drawing = mp.solutions.drawing_utils
 
+def get_face_depth_robust(depth_frame, bbox, w, h):
+    """
+    Get robust depth measurement from face region using multiple sampling points.
+    
+    Args:
+        depth_frame: RealSense depth frame
+        bbox: MediaPipe relative bounding box
+        w, h: Image width and height
+        
+    Returns:
+        float: Median depth value in meters, or None if no valid readings
+    """
+    x = int(bbox.xmin * w)
+    y = int(bbox.ymin * h)
+    width = int(bbox.width * w)
+    height = int(bbox.height * h)
+    
+    # Ensure bounding box is within image bounds
+    x = max(0, min(x, w - 1))
+    y = max(0, min(y, h - 1))
+    width = min(width, w - x)
+    height = min(height, h - y)
+    
+    # Sample multiple points in face region - concentrated around center for better reliability
+    depths = []
+    # Use smaller offsets closer to center to avoid background
+    # Sample pattern: center + 8 surrounding points in a tight grid
+    center_x = x + width // 2
+    center_y = y + height // 2
+    
+    # Define sampling offsets relative to face size (smaller than 1/4 to stay within face)
+    offset_ratios = [-0.15, 0.0, 0.15]  # 15% of face size from center
+    
+    for dx_ratio in offset_ratios:
+        for dy_ratio in offset_ratios:
+            # Calculate absolute pixel positions
+            px = int(center_x + dx_ratio * width)
+            py = int(center_y + dy_ratio * height)
+            
+            # Ensure we're within image and bounding box bounds
+            if (x <= px < x + width and 
+                y <= py < y + height and 
+                0 <= px < w and 0 <= py < h):
+                depth = depth_frame.get_distance(px, py)
+                # Filter out invalid depth readings
+                if 0.1 < depth < 10.0:  # Valid depth range (10cm to 10m)
+                    depths.append(depth)
+    
+    if depths:
+        # Use median to reduce noise from outliers
+        median_depth = np.median(depths)
+        return median_depth
+    else:
+        return None
+
 print("RealSense D435 Face Detection and Tracking Starting...")
 print("Make sure RealSense camera is connected and drivers are installed")
 print("Press 'q' or ESC to quit")
@@ -36,7 +91,12 @@ if USE_REALSENSE_SDK:
     # Start streaming
     try:
         pipeline.start(config)
-        print("RealSense pipeline started successfully")
+        
+        # Create alignment object to align depth to color
+        align_to = rs.stream.color
+        align = rs.align(align_to)
+        print("RealSense pipeline started successfully with depth-color alignment")
+        
     except Exception as e:
         print(f"Failed to start RealSense pipeline: {e}")
         print("Falling back to OpenCV")
@@ -62,15 +122,22 @@ try:
         
         while True:
             if USE_REALSENSE_SDK:
-                # RealSense SDK method
+                # RealSense SDK method with alignment
                 frames = pipeline.wait_for_frames()
-                depth_frame = frames.get_depth_frame()
-                color_frame = frames.get_color_frame()
-                if not depth_frame or not color_frame:
+                
+                # Align depth frame to color frame
+                aligned_frames = align.process(frames)
+                aligned_depth_frame = aligned_frames.get_depth_frame()
+                color_frame = aligned_frames.get_color_frame()
+                
+                if not aligned_depth_frame or not color_frame:
                     continue
                 
-                depth_image = np.asanyarray(depth_frame.get_data())
+                depth_image = np.asanyarray(aligned_depth_frame.get_data())
                 color_image = np.asanyarray(color_frame.get_data())
+                
+                # Use aligned depth frame for depth measurements
+                depth_frame = aligned_depth_frame
                 
             else:
                 # OpenCV method
@@ -102,15 +169,34 @@ try:
                         width = int(bbox.width * w)
                         height = int(bbox.height * h)
                         
-                        # Calculate center point for depth reading
-                        center_x = x + width // 2
-                        center_y = y + height // 2
+                        # Get robust depth measurement using multiple sampling points
+                        depth_value = get_face_depth_robust(depth_frame, bbox, w, h)
                         
-                        # Get depth value at face center
-                        if 0 <= center_x < w and 0 <= center_y < h:
-                            depth_value = depth_frame.get_distance(center_x, center_y)
+                        if depth_value is not None:
+                            # Display depth with enhanced information
                             cv2.putText(color_image_annotated, f"Depth: {depth_value:.2f}m", 
                                       (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            
+                            # Add distance category for better understanding
+                            if depth_value < 0.5:
+                                distance_category = "Very Close"
+                                color = (0, 0, 255)  # Red
+                            elif depth_value < 1.0:
+                                distance_category = "Close"
+                                color = (0, 165, 255)  # Orange
+                            elif depth_value < 2.0:
+                                distance_category = "Near"
+                                color = (0, 255, 255)  # Yellow
+                            else:
+                                distance_category = "Far"
+                                color = (0, 255, 0)  # Green
+                            
+                            cv2.putText(color_image_annotated, f"({distance_category})", 
+                                      (x, y + height + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        else:
+                            # No valid depth reading
+                            cv2.putText(color_image_annotated, "Depth: N/A", 
+                                      (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
             if USE_REALSENSE_SDK and depth_image is not None:
                 # Create depth colormap and stack images

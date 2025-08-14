@@ -23,6 +23,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from yolo_msgs.msg import DetectionArray
 from nav2_msgs.action import NavigateToPose, FollowWaypoints
 from std_msgs.msg import Header, String
+from std_srvs.srv import Trigger
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_ros import TransformException
@@ -117,17 +118,33 @@ class MissionController(Node):
         # Publisher for mission state
         self.mission_state_publisher = self.create_publisher(String, '/mission_state', 10)
         
-        # Timer for state machine processing
-        self.state_timer = self.create_timer(0.5, self.state_machine_update)  # 2Hz update rate
+        # Service for manual state transitions (testing)
+        self.force_approaching_service = self.create_service(
+            Trigger, 'force_approaching_state', self.force_approaching_callback
+        )
+        self.force_tracking_service = self.create_service(
+            Trigger, 'force_tracking_state', self.force_tracking_callback
+        )
+        self.force_patrolling_service = self.create_service(
+            Trigger, 'force_patrolling_state', self.force_patrolling_callback
+        )
+        
+        # Timer for state machine processing - reduced frequency to avoid navigation interrupts
+        self.state_timer = self.create_timer(1.0, self.state_machine_update)  # 1Hz update rate
+        
+        # Timer for periodic state publishing and debugging
+        self.state_publish_timer = self.create_timer(2.0, self.periodic_state_update)  # 0.5Hz for visibility
         
         # Initialize patrol waypoints
         self.patrol_poses = self.create_patrol_poses()
         
-        self.get_logger().info('Mission Controller initialized')
-        self.get_logger().info(f'Starting in {self.current_state.value} state')
-        self.get_logger().info(f'Approach distance threshold: {self.approach_distance:.2f}m')
-        self.get_logger().info(f'Person lost timeout: {self.person_lost_timeout:.1f}s')
-        self.get_logger().info(f'Configured {len(self.patrol_poses)} patrol waypoints')
+        self.logger = self.get_logger()
+
+        self.logger.info('Mission Controller initialized')
+        self.logger.info(f'Starting in {self.current_state.value} state')
+        self.logger.info(f'Approach distance threshold: {self.approach_distance:.2f}m')
+        self.logger.info(f'Person lost timeout: {self.person_lost_timeout:.1f}s')
+        self.logger.info(f'Configured {len(self.patrol_poses)} patrol waypoints')
         
         # Start patrolling
         self.start_patrolling()
@@ -154,27 +171,84 @@ class MissionController(Node):
         
         return poses
     
+    def should_update_goal(self, new_goal):
+        """Check if we should update the current navigation goal to avoid flickering."""
+        if self.current_goal is None:
+            return True
+        
+        # Calculate distance between current and new goal
+        dx = new_goal.pose.position.x - self.current_goal.pose.position.x
+        dy = new_goal.pose.position.y - self.current_goal.pose.position.y
+        distance = math.sqrt(dx**2 + dy**2)
+        
+        # Only update if new goal is significantly different (>0.5m)
+        return distance > 0.5
+    
     def publish_mission_state(self):
         """Publish current mission state."""
         msg = String()
         msg.data = self.current_state.value
         self.mission_state_publisher.publish(msg)
+        self.logger.info(f'Published mission state: {self.current_state.value}')
+    
+    def periodic_state_update(self):
+        """Periodic state publishing and debugging information."""
+        # Always publish current state for visibility
+        self.publish_mission_state()
+        
+        # Debug information
+        current_time = time.time()
+        time_since_last_detection = current_time - self.last_person_detected_time
+        
+        if self.current_state == MissionState.PATROLLING:
+            self.logger.debug(f'PATROLLING: Time since last person detection: {time_since_last_detection:.1f}s')
+            if self.latest_detection is not None:
+                self.logger.debug(f'Person detected with confidence: {self.latest_detection.score:.2f}')
+        elif self.current_state == MissionState.APPROACHING:
+            distance = self.get_distance_to_current_goal()
+            if distance is not None:
+                self.logger.debug(f'APPROACHING: Distance to goal: {distance:.2f}m, Time since detection: {time_since_last_detection:.1f}s')
+            else:
+                self.logger.debug(f'APPROACHING: No distance available, Time since detection: {time_since_last_detection:.1f}s')
+        elif self.current_state == MissionState.TRACKING:
+            self.logger.debug(f'TRACKING: Time since last detection: {time_since_last_detection:.1f}s')
     
     def yolo_callback(self, msg):
         """Process YOLO detection results."""
         # Look for person detections
         person_detections = []
+        total_detections = len(msg.detections)
+        
+        self.logger.debug(f'Received YOLO callback with {total_detections} detections')
+        
         for detection in msg.detections:
-            if detection.class_name == 'person' and detection.score > 0.5:
+            # Log all detections for debugging
+            self.logger.debug(f'Detection: class_id={detection.class_id}, class_name="{detection.class_name}", score={detection.score:.2f}')
+            
+            # Check for person using both class_name and class_id (for compatibility)
+            is_person = (detection.class_name == 'person' or 
+                        detection.class_id == 0 or  # COCO person class_id
+                        str(detection.class_id) == 'person')
+            
+            if is_person and detection.score > 0.5:
                 person_detections.append(detection)
+                self.logger.info(f'Valid person detection: score={detection.score:.2f}')
         
         if person_detections:
             # Update detection time and store the best detection (highest confidence)
             self.last_person_detected_time = time.time()
             self.latest_detection = max(person_detections, key=lambda d: d.score)
-            self.get_logger().debug(f'Person detected with confidence {self.latest_detection.score:.2f}')
+            self.logger.info(f'🚶 Person detected with confidence {self.latest_detection.score:.2f} (current state: {self.current_state.value})')
+            
+            # Force state transition check if in PATROLLING
+            if self.current_state == MissionState.PATROLLING:
+                self.logger.info('🔄 Triggering immediate transition check from PATROLLING to APPROACHING')
         else:
             self.latest_detection = None
+            if total_detections > 0:
+                self.logger.debug(f'Received {total_detections} detections but no persons above 0.5 confidence')
+            else:
+                self.logger.debug('No detections in YOLO message')
     
     def camera_info_callback(self, msg):
         """Store camera intrinsic parameters."""
@@ -199,29 +273,52 @@ class MissionController(Node):
     
     def handle_patrolling_state(self, time_since_last_detection):
         """Handle PATROLLING state logic."""
+        # Debug current conditions
+        has_detection = self.latest_detection is not None
+        detection_recent = time_since_last_detection < 2.0
+        
+        self.logger.debug(f'PATROLLING conditions: has_detection={has_detection}, time_since_last={time_since_last_detection:.1f}s, recent={detection_recent}')
+        
         # Transition to APPROACHING if person detected
-        if self.latest_detection is not None and time_since_last_detection < 2.0:
+        if has_detection and detection_recent:
+            self.logger.info(f'✅ Conditions met for PATROLLING → APPROACHING: detection_confidence={self.latest_detection.score:.2f}')
             self.transition_to_approaching()
+        elif has_detection and not detection_recent:
+            self.logger.debug(f'⏰ Person detected but too old ({time_since_last_detection:.1f}s > 2.0s)')
+        elif not has_detection:
+            self.logger.debug('👁️ No person detection available')
     
     def handle_approaching_state(self, time_since_last_detection):
         """Handle APPROACHING state logic."""
+        # Debug current conditions
+        person_lost = time_since_last_detection > self.person_lost_timeout
+        has_goal = self.current_goal is not None
+        distance_to_goal = self.get_distance_to_current_goal() if has_goal else None
+        close_enough = distance_to_goal is not None and distance_to_goal < self.approach_distance
+        
+        distance_str = f'{distance_to_goal:.2f}m' if distance_to_goal else 'N/A'
+        self.logger.debug(f'APPROACHING conditions: person_lost={person_lost}({time_since_last_detection:.1f}s), has_goal={has_goal}, distance={distance_str}, close_enough={close_enough}')
+        
         # Check if we've lost the person
-        if time_since_last_detection > self.person_lost_timeout:
+        if person_lost:
+            self.logger.info(f'⚠️ Person lost for {time_since_last_detection:.1f}s > {self.person_lost_timeout}s, APPROACHING → PATROLLING')
             self.transition_to_patrolling()
             return
         
         # Check if we're close enough to start tracking
-        if self.current_goal is not None:
-            distance_to_goal = self.get_distance_to_current_goal()
-            if distance_to_goal is not None and distance_to_goal < self.approach_distance:
-                self.transition_to_tracking()
-                return
+        if has_goal and close_enough:
+            self.logger.info(f'🎯 Close to target ({distance_to_goal:.2f}m < {self.approach_distance}m), APPROACHING → TRACKING')
+            self.transition_to_tracking()
+            return
         
-        # Update navigation goal if we have a new detection
+        # Update navigation goal if we have a new detection - with goal stability check
         if self.latest_detection is not None:
             new_goal = self.get_goal_pose_from_detection(self.latest_detection)
-            if new_goal is not None:
+            if new_goal is not None and self.should_update_goal(new_goal):
+                self.logger.info(f'🗺️ Updating navigation goal to new person position')
                 self.navigate_to_pose(new_goal)
+            elif new_goal is not None:
+                self.logger.debug(f'🔒 Goal update skipped - new goal too close to current goal')
     
     def handle_tracking_state(self, time_since_last_detection):
         """Handle TRACKING state logic."""
@@ -234,7 +331,7 @@ class MissionController(Node):
         if self.current_state == MissionState.PATROLLING:
             return
         
-        self.get_logger().info(f'State transition: {self.current_state.value} → PATROLLING')
+        self.logger.info(f'State transition: {self.current_state.value} → PATROLLING')
         self.current_state = MissionState.PATROLLING
         self.state_start_time = time.time()
         self.publish_mission_state()
@@ -251,7 +348,7 @@ class MissionController(Node):
         if self.current_state == MissionState.APPROACHING:
             return
         
-        self.get_logger().info(f'State transition: {self.current_state.value} → APPROACHING')
+        self.logger.info(f'State transition: {self.current_state.value} → APPROACHING')
         self.current_state = MissionState.APPROACHING
         self.state_start_time = time.time()
         self.publish_mission_state()
@@ -259,8 +356,9 @@ class MissionController(Node):
         # Stop face tracking if it was active
         self.set_face_tracker_active(False)
         
-        # Cancel current navigation
+        # Cancel current navigation with delay to avoid race condition
         self.cancel_current_navigation()
+        time.sleep(0.2)  # Brief delay to ensure cancellation completes
         
         # Navigate to detected person
         if self.latest_detection is not None:
@@ -273,7 +371,7 @@ class MissionController(Node):
         if self.current_state == MissionState.TRACKING:
             return
         
-        self.get_logger().info(f'State transition: {self.current_state.value} → TRACKING')
+        self.logger.info(f'State transition: {self.current_state.value} → TRACKING')
         self.current_state = MissionState.TRACKING
         self.state_start_time = time.time()
         self.publish_mission_state()
@@ -285,14 +383,14 @@ class MissionController(Node):
     def start_patrolling(self):
         """Start waypoint following for patrolling."""
         if not self.patrol_poses:
-            self.get_logger().warn('No patrol waypoints configured')
+            self.logger.warn('No patrol waypoints configured')
             return
         
-        self.get_logger().info(f'Starting patrol with {len(self.patrol_poses)} waypoints')
+        self.logger.info(f'Starting patrol with {len(self.patrol_poses)} waypoints')
         
         # Wait for the action server
         if not self.follow_waypoints_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error('Follow waypoints action server not available')
+            self.logger.error('Follow waypoints action server not available')
             return
         
         # Create and send waypoint following goal
@@ -305,11 +403,11 @@ class MissionController(Node):
     
     def navigate_to_pose(self, pose):
         """Navigate to a specific pose using Nav2."""
-        self.get_logger().info(f'Navigating to pose: ({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f})')
+        self.logger.info(f'Navigating to pose: ({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f})')
         
         # Wait for the action server
         if not self.navigate_to_pose_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error('Navigate to pose action server not available')
+            self.logger.error('Navigate to pose action server not available')
             return
         
         # Create and send navigation goal
@@ -325,11 +423,11 @@ class MissionController(Node):
         """Handle patrol goal response."""
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Patrol goal rejected')
+            self.logger.error('Patrol goal rejected')
             self.navigation_active = False
             return
         
-        self.get_logger().info('Patrol goal accepted')
+        self.logger.info('Patrol goal accepted')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.patrol_result_callback)
     
@@ -337,29 +435,29 @@ class MissionController(Node):
         """Handle navigation goal response."""
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Navigation goal rejected')
+            self.logger.error('Navigation goal rejected')
             self.navigation_active = False
             return
         
-        self.get_logger().info('Navigation goal accepted')
+        self.logger.info('Navigation goal accepted')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.navigation_result_callback)
     
     def patrol_result_callback(self, future):
         """Handle patrol result."""
         self.navigation_active = False
-        self.get_logger().info('Patrol completed')
+        self.logger.info('Patrol completed')
     
     def navigation_result_callback(self, future):
         """Handle navigation result."""
         self.navigation_active = False
         result = future.result().result
-        self.get_logger().info(f'Navigation completed with result: {result}')
+        self.logger.info(f'Navigation completed with result: {result}')
     
     def cancel_current_navigation(self):
         """Cancel any active navigation."""
         if self.navigation_active:
-            self.get_logger().info('Cancelling current navigation')
+            self.logger.info('Cancelling current navigation')
             # Note: In a full implementation, we would cancel the active goal here
             self.navigation_active = False
     
@@ -369,7 +467,7 @@ class MissionController(Node):
             return
         
         self.face_tracker_active = active
-        self.get_logger().info(f'Setting face_tracker_node is_active to {active}')
+        self.logger.info(f'Setting face_tracker_node is_active to {active}')
         
         # Use ros2 param set to control face tracker
         import subprocess
@@ -379,11 +477,11 @@ class MissionController(Node):
             ], capture_output=True, text=True, timeout=5.0)
             
             if result.returncode == 0:
-                self.get_logger().info(f'Successfully set face_tracker is_active to {active}')
+                self.logger.info(f'Successfully set face_tracker is_active to {active}')
             else:
-                self.get_logger().error(f'Failed to set face_tracker is_active: {result.stderr}')
+                self.logger.error(f'Failed to set face_tracker is_active: {result.stderr}')
         except Exception as e:
-            self.get_logger().error(f'Error setting face_tracker parameter: {str(e)}')
+            self.logger.error(f'Error setting face_tracker parameter: {str(e)}')
     
     def get_distance_to_current_goal(self):
         """Calculate distance to current navigation goal."""
@@ -405,7 +503,7 @@ class MissionController(Node):
             return distance
             
         except TransformException as e:
-            self.get_logger().debug(f'Could not get robot position: {str(e)}')
+            self.logger.debug(f'Could not get robot position: {str(e)}')
             return None
     
     def get_goal_pose_from_detection(self, detection):
@@ -415,7 +513,7 @@ class MissionController(Node):
         as specified in Task 4 of the specification.
         """
         if self.camera_info is None or self.latest_depth_image is None:
-            self.get_logger().debug('Missing camera info or depth image for 3D conversion')
+            self.logger.debug('Missing camera info or depth image for 3D conversion')
             return None
         
         try:
@@ -430,7 +528,7 @@ class MissionController(Node):
             # Ensure pixel coordinates are within image bounds
             if (center_u < 0 or center_v < 0 or 
                 center_u >= depth_image.shape[1] or center_v >= depth_image.shape[0]):
-                self.get_logger().debug(f'Detection center ({center_u}, {center_v}) outside image bounds')
+                self.logger.debug(f'Detection center ({center_u}, {center_v}) outside image bounds')
                 return None
             
             # Get depth value (handle different encodings)
@@ -442,7 +540,7 @@ class MissionController(Node):
             
             # Check for valid depth
             if depth_meters <= 0 or depth_meters > 10.0:  # Reasonable range check
-                self.get_logger().debug(f'Invalid depth value: {depth_meters}')
+                self.logger.debug(f'Invalid depth value: {depth_meters}')
                 return None
             
             # Step 3: Convert to 3D coordinates in camera frame
@@ -477,12 +575,36 @@ class MissionController(Node):
             goal_pose.pose.position.z = 0.0  # Ground level for navigation
             goal_pose.pose.orientation.w = 1.0  # Default orientation
             
-            self.get_logger().info(f'Converted detection to goal: ({goal_pose.pose.position.x:.2f}, {goal_pose.pose.position.y:.2f}) at {depth_meters:.2f}m depth')
+            self.logger.info(f'Converted detection to goal: ({goal_pose.pose.position.x:.2f}, {goal_pose.pose.position.y:.2f}) at {depth_meters:.2f}m depth')
             return goal_pose
             
         except Exception as e:
-            self.get_logger().error(f'Error converting detection to goal pose: {str(e)}')
+            self.logger.error(f'Error converting detection to goal pose: {str(e)}')
             return None
+    
+    def force_approaching_callback(self, request, response):
+        """Service callback to force transition to APPROACHING state."""
+        self.logger.info('🔧 Manual transition to APPROACHING state requested')
+        self.transition_to_approaching()
+        response.success = True
+        response.message = f"Forced transition to APPROACHING state"
+        return response
+    
+    def force_tracking_callback(self, request, response):
+        """Service callback to force transition to TRACKING state."""
+        self.logger.info('🔧 Manual transition to TRACKING state requested')
+        self.transition_to_tracking()
+        response.success = True
+        response.message = f"Forced transition to TRACKING state"
+        return response
+    
+    def force_patrolling_callback(self, request, response):
+        """Service callback to force transition to PATROLLING state."""
+        self.logger.info('🔧 Manual transition to PATROLLING state requested')
+        self.transition_to_patrolling()
+        response.success = True
+        response.message = f"Forced transition to PATROLLING state"
+        return response
 
 
 def main(args=None):

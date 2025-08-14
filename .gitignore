@@ -31,8 +31,10 @@ __pycache__/
 .DS_Store
 
 # personal files
+docs/
 run_face_detection.sh
 specification.md
 start_camera.sh
-docs/token.txt
 *.pt
+*.pth
+yolov8m.pt.4f653d8f8eb24fe98ffde12aefbf659e.partial

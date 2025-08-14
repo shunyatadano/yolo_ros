@@ -80,6 +80,7 @@ def generate_launch_description():
             'enable_depth': 'true',
             'enable_infra': 'false',
             'enable_fisheye': 'false',
+            'align_depth.enable': 'true',  # Enable depth-color alignment
             'color_width': '640',
             'color_height': '480',
             'color_fps': '15',
