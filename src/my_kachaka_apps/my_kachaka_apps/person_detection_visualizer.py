@@ -28,7 +28,7 @@ class PersonDetectionVisualizer(Node):
         self.declare_parameter('marker_lifetime', 10.0)
         self.declare_parameter('detection_topic', '/yolo/detections')
         self.declare_parameter('marker_topic', '/person_detection_markers')
-        self.declare_parameter('camera_frame', 'camera_color_frame')
+        self.declare_parameter('camera_frame', 'camera_color_optical_frame')
         self.declare_parameter('map_frame', 'map')
         
         self.marker_lifetime = self.get_parameter('marker_lifetime').value
@@ -75,13 +75,12 @@ class PersonDetectionVisualizer(Node):
         marker_array = MarkerArray()
         
         for detection in msg.detections:
-            # Check if this detection contains persons
-            persons = []
-            for result in detection.results:
-                if result.hypothesis.class_id == 'person':
-                    persons.append(result)
+            # Check if this detection is a person
+            is_person = (detection.class_name == 'person' or 
+                        detection.class_id == 0 or  # COCO person class_id
+                        str(detection.class_id) == 'person')
             
-            if not persons:
+            if not is_person or detection.score <= 0.5:
                 continue
             
             # Try to get transform from camera to map
@@ -98,26 +97,25 @@ class PersonDetectionVisualizer(Node):
                 # Use identity transform as fallback (assume camera is at origin)
                 transform = None
             
-            # Create markers for each person detection
-            for person in persons:
-                marker = self.create_person_marker(
-                    detection, person, transform, current_time
-                )
-                if marker:
-                    marker_array.markers.append(marker)
-                    
-                    # Store marker info for cleanup
-                    self.active_markers[marker.id] = {
-                        'timestamp': current_time,
-                        'marker': marker
-                    }
+            # Create marker for person detection
+            marker = self.create_person_marker(
+                detection, transform, current_time
+            )
+            if marker:
+                marker_array.markers.append(marker)
+                
+                # Store marker info for cleanup
+                self.active_markers[marker.id] = {
+                    'timestamp': current_time,
+                    'marker': marker
+                }
         
         # Publish markers
         if marker_array.markers:
             self.marker_pub.publish(marker_array)
             self.get_logger().debug(f'Published {len(marker_array.markers)} person markers')
     
-    def create_person_marker(self, detection, person_result, transform, timestamp):
+    def create_person_marker(self, detection, transform, timestamp):
         """Create a visualization marker for a detected person."""
         marker = Marker()
         marker.header.frame_id = self.map_frame
@@ -161,7 +159,7 @@ class PersonDetectionVisualizer(Node):
         marker.scale.z = 1.7  # Height (typical person height)
         
         # Set color based on confidence
-        confidence = person_result.hypothesis.score
+        confidence = detection.score
         marker.color = self.confidence_to_color(confidence)
         
         # Set lifetime

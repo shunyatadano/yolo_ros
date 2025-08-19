@@ -156,18 +156,18 @@ def generate_launch_description():
         }]
     )
     
-    # # 5. Mission controller node  
-    # mission_controller_node = Node(
-    #     package='my_kachaka_apps',
-    #     executable='mission_controller', 
-    #     name='mission_controller',
-    #     output='screen',
-    #     parameters=[{
-    #         'approach_distance_threshold': 1.5,
-    #         'patrol_waypoints': [1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0],
-    #         'person_lost_timeout': 5.0
-    #     }]
-    # )
+    # 5. Mission controller node  
+    mission_controller_node = Node(
+        package='my_kachaka_apps',
+        executable='mission_controller', 
+        name='mission_controller',
+        output='screen',
+        parameters=[{
+            'approach_distance_threshold': 1.5,
+            'patrol_waypoints': [1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0],
+            'person_lost_timeout': 5.0
+        }]
+    )
     
     # 6. Simple patrol node for waypoint navigation (PATROLLING state)
     patrol_node = Node(
@@ -195,7 +195,16 @@ def generate_launch_description():
         }]
     )
     
-    # 8. Nav2 launch (always enabled for PATROLLING state)
+    # 8. Static transform publisher: base_link -> camera_link
+    static_tf_camera = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_tf_camera',
+        arguments=['0.25', '0.0', '0.72', '0.0', '0.0', '0.0', 'base_link', 'camera_link'],
+        condition=IfCondition(enable_camera)
+    )
+
+    # 9. Nav2 launch (always enabled for PATROLLING state)
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -250,6 +259,7 @@ def generate_launch_description():
         
         # Camera system
         realsense_launch,
+        static_tf_camera,
         
         # YOLO detection
         yolo_launch,
@@ -263,8 +273,8 @@ def generate_launch_description():
         # Face tracking
         face_tracker_node,
         
-        # # Mission coordination
-        # mission_controller_node,
+        # Mission coordination
+        mission_controller_node,
         
         # Camera activation (sequential with proper delays)
         camera_configure_cmd,
